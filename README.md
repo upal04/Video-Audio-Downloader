@@ -1,4 +1,4 @@
-# 🚀 Video-Audio Downloader
+<img width="2785" height="1481" alt="image" src="https://github.com/user-attachments/assets/31449ec4-49de-447a-9e85-5a3ca2f664cb" /># 🚀 Video-Audio Downloader
 
 A modern, responsive web application for downloading videos and audio from popular platforms like YouTube, Instagram, Facebook, Twitter, and 1000+ other sites. Built with Flask and yt-dlp.
 
@@ -31,18 +31,13 @@ A modern, responsive web application for downloading videos and audio from popul
 
 ## 🖥️ Live Demo
 
-**[🚀 Try It Now](https://your-app-name.up.railway.app)** 
+**[🚀 Try It Now]([https://your-app-name.up.railway.app](https://video-audio-downloader-by-upal.up.railway.app))** 
 
 ## 📸 Screenshots
 
 ### Desktop View
-![Desktop Interface](https://via.placeholder.com/800x450/4f46e5/ffffff?text=Desktop+Interface)
+<img width="2785" height="1481" alt="Screenshot 2025-12-19 043132" src="https://github.com/user-attachments/assets/14262717-07cd-4772-bb5a-1add1d248b52" />
 
-### Mobile View  
-![Mobile Interface](https://via.placeholder.com/400x700/7c3aed/ffffff?text=Mobile+Interface)
-
-### Progress Tracking
-![Download Progress](https://via.placeholder.com/800x300/10b981/ffffff?text=Download+in+Progress)
 
 ## 🛠️ Installation & Setup
 
