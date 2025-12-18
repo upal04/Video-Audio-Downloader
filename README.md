@@ -31,7 +31,7 @@ A modern, responsive web application for downloading videos and audio from popul
 
 ## 🖥️ Live Demo
 
-**[🚀 Try It Now]([https://your-app-name.up.railway.app](https://video-audio-downloader-by-upal.up.railway.app))** 
+**[🚀 Try It Now]([https://video-audio-downloader-by-upal.up.railway.app])** 
 
 ## 📸 Screenshots
 
