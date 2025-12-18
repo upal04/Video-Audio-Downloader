@@ -31,7 +31,7 @@ A modern, responsive web application for downloading videos and audio from popul
 
 ## 🖥️ Live Demo
 
-**[🚀 Try It Now](https://your-app-name.up.railway.app)** *(Replace with your actual deployment URL)*
+**[🚀 Try It Now](https://your-app-name.up.railway.app)** 
 
 ## 📸 Screenshots
 
@@ -50,9 +50,3 @@ A modern, responsive web application for downloading videos and audio from popul
 - Python 3.9 or higher
 - Git
 
-### Local Development Setup
-
-1. **Clone the repository**
-```bash
-git clone https://github.com/yourusername/Video-Audio-Downloader.git
-cd Video-Audio-Downloader
