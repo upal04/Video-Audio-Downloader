@@ -16,29 +16,21 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
-app.secret_key = os.urandom(24)
+app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24))
 
 # Store active downloads
 active_downloads = {}
 
-# Get download folder (for local testing)
-def get_download_folder():
-    home = Path.home()
-    downloads = home / 'Downloads'
-    downloads.mkdir(exist_ok=True)
-    return str(downloads)
-
-# For Netlify deployment - use temp directory
+# Get storage folder for Render
 def get_storage_folder():
-    """Get folder for storing downloads (works on Netlify too)"""
-    # Try temp directory first (works on Netlify)
+    """Get folder for storing downloads"""
     temp_dir = os.environ.get('TEMP') or os.environ.get('TMPDIR') or '/tmp'
     storage_dir = os.path.join(temp_dir, 'yt_downloads')
-    Path(storage_dir).mkdir(exist_ok=True)
+    Path(storage_dir).mkdir(parents=True, exist_ok=True)
     return storage_dir
 
 def download_task(task_id, url, download_type='video'):
-    """SIMPLE download WITHOUT FFmpeg - WORKS 100%"""
+    """Simple download WITHOUT FFmpeg - WORKS 100%"""
     try:
         storage_folder = get_storage_folder()
         
@@ -48,7 +40,8 @@ def download_task(task_id, url, download_type='video'):
             'message': 'Starting download...',
             'filename': None,
             'folder': storage_folder,
-            'type': download_type
+            'type': download_type,
+            'auto_downloaded': False  # Track if auto-download happened
         }
         
         # SIMPLE yt-dlp options - NO FFMPEG POSTPROCESSORS
@@ -57,7 +50,7 @@ def download_task(task_id, url, download_type='video'):
             ydl_opts = {
                 'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio',
                 'outtmpl': os.path.join(storage_folder, '%(title)s.%(ext)s'),
-                'quiet': False,  # Set to False to see debug info
+                'quiet': True,
                 'no_warnings': False,
                 'noplaylist': True,
                 # NO postprocessors - download as is
@@ -71,7 +64,7 @@ def download_task(task_id, url, download_type='video'):
             ydl_opts = {
                 'format': 'best[ext=mp4]/best',
                 'outtmpl': os.path.join(storage_folder, '%(title)s.%(ext)s'),
-                'quiet': False,
+                'quiet': True,
                 'no_warnings': False,
                 'noplaylist': True,
                 'continuedl': True,
@@ -275,6 +268,7 @@ def get_status(task_id):
 
 @app.route('/api/download-file/<task_id>')
 def download_file(task_id):
+    """Serve file with anti-duplicate protection"""
     if task_id not in active_downloads:
         return jsonify({'error': 'File not found'}), 404
     
@@ -287,6 +281,13 @@ def download_file(task_id):
     
     if not filepath or not os.path.exists(filepath):
         return jsonify({'error': 'File missing'}), 404
+    
+    # Check if this is an auto-download (from frontend header)
+    is_auto_download = request.headers.get('X-Auto-Download') == 'true'
+    
+    # If it's NOT an auto-download, mark as manually downloaded
+    if not is_auto_download:
+        file_info['manually_downloaded'] = True
     
     return send_file(
         filepath,
@@ -317,31 +318,10 @@ def health():
         'message': 'No FFmpeg required - downloads native formats'
     })
 
-# Static files
-@app.route('/static/<path:path>')
-def serve_static(path):
-    return send_from_directory('static', path)
-
 if __name__ == '__main__':
     # Create storage folder
     storage = get_storage_folder()
     Path(storage).mkdir(exist_ok=True)
     
-    print("\n" + "="*50)
-    print("🎵 SIMPLE VIDEO/AUDIO DOWNLOADER")
-    print("="*50)
-    print(f"Storage folder: {storage}")
-    print(f"Working directory: {os.getcwd()}")
-    print("\n✅ NO FFMPEG REQUIRED!")
-    print("Audio downloads as: .m4a, .webm, .opus")
-    print("Video downloads as: .mp4")
-    print("\n📱 Supported platforms:")
-    print("- YouTube (100% working)")
-    print("- Instagram (most public videos)")
-    print("- Facebook (public videos)")
-    print("- Twitter/X (public videos)")
-    print("\n🌐 Starting server: http://localhost:5000")
-    print("="*50 + "\n")
-    
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)
