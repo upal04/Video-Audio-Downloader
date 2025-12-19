@@ -382,7 +382,6 @@
         .btn:disabled {
             opacity: 0.6;
             cursor: not-allowed;
-            transform: none !important;
         }
 
         /* Progress Section */
@@ -981,7 +980,7 @@
 
         <!-- Footer -->
         <div class="footer">
-            <p>RON's Downloader © 2025 | Fast, Free, Unlimited Downloads | Created By Upal</p>
+            <p>RON's Downloader © 2025 | Fast, Free, Unlimited Downloads | Made By UPAL</p>
             <p style="margin-top: 5px; font-size: 0.85rem;">
                 <i class="fas fa-shield-alt"></i> 100% Secure | No Ads | No Watermarks
             </p>
@@ -993,348 +992,336 @@
 
     <!-- JavaScript -->
     <script>
-        let currentTaskId = null;
-        let progressInterval = null;
-        let autoDownloadAttempted = false;
-        
-        // Initialize
-        document.addEventListener('DOMContentLoaded', function() {
-            setupEventListeners();
+        // 🔧 FIXED: Prevents double downloads
+let currentTaskId = null;
+let progressInterval = null;
+let hasAutoDownloaded = false; // NEW: Track if auto-download happened
+
+// Initialize
+document.addEventListener('DOMContentLoaded', function() {
+    setupEventListeners();
+    updateFormatInfo();
+    addFloatingAnimation();
+});
+
+function setupEventListeners() {
+    // Download button
+    document.getElementById('downloadBtn').addEventListener('click', startDownload);
+    
+    // Clear button
+    document.getElementById('clearBtn').addEventListener('click', function() {
+        document.getElementById('urlInput').value = '';
+        document.getElementById('urlInput').focus();
+        showToast('Input cleared', 'info');
+    });
+    
+    // Format buttons
+    document.querySelectorAll('.format-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
             updateFormatInfo();
-            addFloatingAnimation();
+            showToast(`Format set to ${this.dataset.type === 'video' ? 'Video (.MP4)' : 'Audio (.M4A)'}`, 'info');
         });
-        
-        function setupEventListeners() {
-            // Download button
-            document.getElementById('downloadBtn').addEventListener('click', startDownload);
-            
-            // Clear button
-            document.getElementById('clearBtn').addEventListener('click', function() {
-                document.getElementById('urlInput').value = '';
-                document.getElementById('urlInput').focus();
-                showToast('Input cleared', 'info');
-            });
-            
-            // Format buttons
-            document.querySelectorAll('.format-btn').forEach(btn => {
-                btn.addEventListener('click', function() {
-                    document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
-                    this.classList.add('active');
-                    updateFormatInfo();
-                    showToast(`Format set to ${this.dataset.type === 'video' ? 'Video (.MP4)' : 'Audio (.M4A)'}`, 'info');
-                });
-            });
-            
-            // New download button
-            document.getElementById('newDownloadBtn').addEventListener('click', function() {
-                resetUI();
-                document.getElementById('urlInput').focus();
-                showToast('Ready for new download!', 'success');
-            });
-            
-            // Download file button
-            document.getElementById('downloadFileBtn').addEventListener('click', function() {
-                if (currentTaskId) {
-                    triggerDownload(currentTaskId);
-                }
-            });
-            
-            // Enter key for URL input
-            document.getElementById('urlInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    startDownload();
-                }
-            });
-            
-            // Focus animation for URL input
-            document.getElementById('urlInput').addEventListener('focus', function() {
-                this.parentElement.classList.add('focused');
-            });
-            
-            document.getElementById('urlInput').addEventListener('blur', function() {
-                this.parentElement.classList.remove('focused');
-            });
+    });
+    
+    // New download button
+    document.getElementById('newDownloadBtn').addEventListener('click', function() {
+        resetUI();
+        document.getElementById('urlInput').focus();
+        showToast('Ready for new download!', 'success');
+    });
+    
+    // Download file button (MANUAL download)
+    document.getElementById('downloadFileBtn').addEventListener('click', function() {
+        if (currentTaskId) {
+            triggerManualDownload(currentTaskId);
         }
-        
-        function addFloatingAnimation() {
-            const elements = document.querySelectorAll('.format-btn, .btn');
-            elements.forEach(el => {
-                el.addEventListener('mouseenter', function() {
-                    this.classList.add('float');
-                });
-                el.addEventListener('mouseleave', function() {
-                    this.classList.remove('float');
-                });
-            });
+    });
+    
+    // Enter key for URL input
+    document.getElementById('urlInput').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            startDownload();
         }
-        
-        function updateFormatInfo() {
-            const type = document.querySelector('.format-btn.active').dataset.type;
-            const formatInfo = document.getElementById('formatInfo');
-            if (type === 'audio') {
-                formatInfo.innerHTML = `
-                    <i class="fas fa-bolt"></i>
-                    <span>Audio downloads in high-quality .M4A format - compatible with all devices and media players</span>
-                `;
-            } else {
-                formatInfo.innerHTML = `
-                    <i class="fas fa-bolt"></i>
-                    <span>Video downloads in .MP4 format - Full HD quality, compatible with all devices</span>
-                `;
-            }
+    });
+    
+    // Focus animation for URL input
+    document.getElementById('urlInput').addEventListener('focus', function() {
+        this.parentElement.classList.add('focused');
+    });
+    
+    document.getElementById('urlInput').addEventListener('blur', function() {
+        this.parentElement.classList.remove('focused');
+    });
+}
+
+function addFloatingAnimation() {
+    const elements = document.querySelectorAll('.format-btn, .btn');
+    elements.forEach(el => {
+        el.addEventListener('mouseenter', function() {
+            this.classList.add('float');
+        });
+        el.addEventListener('mouseleave', function() {
+            this.classList.remove('float');
+        });
+    });
+}
+
+function updateFormatInfo() {
+    const type = document.querySelector('.format-btn.active').dataset.type;
+    const formatInfo = document.getElementById('formatInfo');
+    if (type === 'audio') {
+        formatInfo.innerHTML = `
+            <i class="fas fa-bolt"></i>
+            <span>Audio downloads in high-quality .M4A format - compatible with all devices and media players</span>
+        `;
+    } else {
+        formatInfo.innerHTML = `
+            <i class="fas fa-bolt"></i>
+            <span>Video downloads in .MP4 format - Full HD quality, compatible with all devices</span>
+        `;
+    }
+}
+
+function startDownload() {
+    const url = document.getElementById('urlInput').value.trim();
+    
+    if (!url) {
+        showToast('Please enter a valid URL', 'error');
+        document.getElementById('urlInput').focus();
+        return;
+    }
+    
+    if (!url.includes('http')) {
+        showToast('Please enter a valid URL starting with http:// or https://', 'warning');
+        return;
+    }
+    
+    const downloadType = document.querySelector('.format-btn.active').dataset.type;
+    const btn = document.getElementById('downloadBtn');
+    
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>Processing...</span>';
+    
+    showToast(`Starting ${downloadType} download...`, 'info');
+    
+    // 🔧 RESET auto-download flag for new download
+    hasAutoDownloaded = false;
+    
+    fetch('/api/download', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            url: url,
+            type: downloadType
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            currentTaskId = data.task_id;
+            showProgressSection();
+            startProgressMonitoring();
+            showToast(`${downloadType === 'video' ? '🎬 Video' : '🎵 Audio'} download started!`, 'success');
+        } else {
+            showToast(data.error || 'Failed to start download', 'error');
         }
+    })
+    .catch(error => {
+        showToast('Network error. Please check your connection.', 'error');
+        console.error('Download error:', error);
+    })
+    .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-download"></i><span>Download Now</span>';
+    });
+}
+
+function showProgressSection() {
+    document.getElementById('completeSection').style.display = 'none';
+    document.getElementById('processingSection').style.display = 'none';
+    
+    const progressSection = document.getElementById('progressSection');
+    progressSection.style.display = 'block';
+    
+    progressSection.scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+function showProcessingSection() {
+    document.getElementById('progressSection').style.display = 'none';
+    
+    const processingSection = document.getElementById('processingSection');
+    processingSection.style.display = 'block';
+    
+    processingSection.scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+// 🔧 FIXED: Prevents double downloads
+function startProgressMonitoring() {
+    if (progressInterval) clearInterval(progressInterval);
+    
+    progressInterval = setInterval(() => {
+        if (!currentTaskId) return;
         
-        function startDownload() {
-            const url = document.getElementById('urlInput').value.trim();
-            
-            if (!url) {
-                showToast('Please enter a valid URL', 'error');
-                document.getElementById('urlInput').focus();
-                return;
-            }
-            
-            if (!url.includes('http')) {
-                showToast('Please enter a valid URL starting with http:// or https://', 'warning');
-                return;
-            }
-            
-            const downloadType = document.querySelector('.format-btn.active').dataset.type;
-            const btn = document.getElementById('downloadBtn');
-            
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>Processing...</span>';
-            
-            showToast(`Starting ${downloadType} download...`, 'info');
-            
-            fetch('/api/download', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    url: url,
-                    type: downloadType
-                })
-            })
+        fetch(`/api/status/${currentTaskId}`)
             .then(response => response.json())
             .then(data => {
-                if (data.success) {
-                    currentTaskId = data.task_id;
-                    autoDownloadAttempted = false;
-                    showProgressSection();
-                    startProgressMonitoring();
-                    showToast(`${downloadType === 'video' ? '🎬 Video' : '🎵 Audio'} download started!`, 'success');
-                } else {
-                    showToast(data.error || 'Failed to start download', 'error');
+                if (data.error) {
+                    clearInterval(progressInterval);
+                    showToast('Error: ' + data.error, 'error');
+                    resetUI();
+                    return;
+                }
+                
+                // Update progress
+                const progress = data.progress || 0;
+                document.getElementById('progressPercent').textContent = progress + '%';
+                document.getElementById('progressBar').style.width = progress + '%';
+                document.getElementById('progressMessage').textContent = data.message;
+                document.getElementById('downloadStatus').textContent = data.status;
+                
+                if (data.title) {
+                    const shortTitle = data.title.length > 40 ? data.title.substring(0, 40) + '...' : data.title;
+                    document.getElementById('fileInfo').textContent = shortTitle;
+                }
+                
+                // Check if completed or error
+                if (data.status === 'completed') {
+                    clearInterval(progressInterval);
+                    
+                    // 🔧 FIX: Only auto-download if not already done
+                    if (!hasAutoDownloaded) {
+                        hasAutoDownloaded = true;
+                        showProcessingSection();
+                        
+                        // Wait a moment then use SIMPLE auto-download
+                        setTimeout(() => {
+                            // Method 1: Simple iframe approach (most reliable)
+                            triggerSimpleAutoDownload(currentTaskId, data);
+                            setTimeout(() => showCompleteSection(data), 1000);
+                        }, 1500);
+                    }
+                } else if (data.status === 'error') {
+                    clearInterval(progressInterval);
+                    showToast('Download failed: ' + data.message, 'error');
+                    resetUI();
                 }
             })
             .catch(error => {
-                showToast('Network error. Please check your connection.', 'error');
-                console.error('Download error:', error);
-            })
-            .finally(() => {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-download"></i><span>Download Now</span>';
+                console.error('Progress monitoring error:', error);
             });
+    }, 1000);
+}
+
+// 🔧 NEW: Simple auto-download that doesn't cause duplicates
+function triggerSimpleAutoDownload(taskId, fileData = null) {
+    // Method 1: Hidden iframe (most compatible)
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.src = `/api/download-file/${taskId}?auto=true&_=${Date.now()}`;
+    
+    // Add to body
+    document.body.appendChild(iframe);
+    
+    // Remove after 5 seconds
+    setTimeout(() => {
+        if (iframe.parentNode) {
+            iframe.parentNode.removeChild(iframe);
         }
-        
-        function showProgressSection() {
-            document.getElementById('completeSection').style.display = 'none';
-            document.getElementById('processingSection').style.display = 'none';
-            
-            const progressSection = document.getElementById('progressSection');
-            progressSection.style.display = 'block';
-            
-            progressSection.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }, 5000);
+    
+    showToast('Download started...', 'info');
+}
+
+// 🔧 Manual download function (when user clicks "Download Again")
+function triggerManualDownload(taskId) {
+    showToast('Starting manual download...', 'info');
+    
+    // Use window.location for manual downloads
+    window.location.href = `/api/download-file/${taskId}?manual=true&_=${Date.now()}`;
+}
+
+function showCompleteSection(data) {
+    document.getElementById('progressSection').style.display = 'none';
+    document.getElementById('processingSection').style.display = 'none';
+    
+    const completeSection = document.getElementById('completeSection');
+    completeSection.style.display = 'block';
+    
+    // Update file details
+    document.getElementById('fileNameText').textContent = 
+        data.filename || data.title || 'download';
+    
+    if (data.filesize) {
+        const sizeMB = (data.filesize / (1024 * 1024)).toFixed(2);
+        document.getElementById('fileSizeText').textContent = `${sizeMB} MB`;
+    }
+    
+    if (data.filetype) {
+        document.getElementById('fileTypeText').textContent = 
+            data.filetype.toUpperCase().replace('.', '');
+    }
+    
+    // Update file info text
+    const type = data.type === 'audio' ? 'Audio' : 'Video';
+    document.getElementById('fileInfoText').textContent = 
+        `${type} File | ${data.title ? data.title.substring(0, 50) : 'Download'}`;
+    
+    completeSection.scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+function resetUI() {
+    currentTaskId = null;
+    hasAutoDownloaded = false;
+    
+    if (progressInterval) {
+        clearInterval(progressInterval);
+        progressInterval = null;
+    }
+    
+    // Hide all status sections
+    document.getElementById('progressSection').style.display = 'none';
+    document.getElementById('processingSection').style.display = 'none';
+    document.getElementById('completeSection').style.display = 'none';
+    
+    // Reset progress
+    document.getElementById('progressBar').style.width = '0%';
+    document.getElementById('progressPercent').textContent = '0%';
+    document.getElementById('progressMessage').textContent = 'Starting download...';
+}
+
+function showToast(message, type = 'info') {
+    const icons = {
+        success: 'fas fa-check-circle',
+        error: 'fas fa-exclamation-circle',
+        info: 'fas fa-info-circle',
+        warning: 'fas fa-exclamation-triangle'
+    };
+    
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+        <i class="${icons[type] || icons.info} toast-icon"></i>
+        <span>${message}</span>
+    `;
+    
+    document.getElementById('toastContainer').appendChild(toast);
+    
+    // Auto remove after 5 seconds
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.parentNode.removeChild(toast);
         }
-        
-        function showProcessingSection() {
-            document.getElementById('progressSection').style.display = 'none';
-            
-            const processingSection = document.getElementById('processingSection');
-            processingSection.style.display = 'block';
-            
-            processingSection.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }, 5000);
+    
+    // Click to dismiss
+    toast.addEventListener('click', () => {
+        if (toast.parentNode) {
+            toast.parentNode.removeChild(toast);
         }
-        
-        function startProgressMonitoring() {
-            if (progressInterval) clearInterval(progressInterval);
-            
-            progressInterval = setInterval(() => {
-                if (!currentTaskId) return;
-                
-                fetch(`/api/status/${currentTaskId}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.error) {
-                            clearInterval(progressInterval);
-                            showToast('Error: ' + data.error, 'error');
-                            resetUI();
-                            return;
-                        }
-                        
-                        // Update progress
-                        const progress = data.progress || 0;
-                        document.getElementById('progressPercent').textContent = progress + '%';
-                        document.getElementById('progressBar').style.width = progress + '%';
-                        document.getElementById('progressMessage').textContent = data.message;
-                        document.getElementById('downloadStatus').textContent = data.status;
-                        
-                        if (data.title) {
-                            const shortTitle = data.title.length > 40 ? data.title.substring(0, 40) + '...' : data.title;
-                            document.getElementById('fileInfo').textContent = shortTitle;
-                        }
-                        
-                        // Check if completed or error
-                        if (data.status === 'completed') {
-                            clearInterval(progressInterval);
-                            
-                            if (!autoDownloadAttempted) {
-                                showProcessingSection();
-                                autoDownloadAttempted = true;
-                                
-                                // Show processing for 1.5 seconds then auto-download
-                                setTimeout(() => {
-                                    triggerDownload(currentTaskId, data);
-                                    setTimeout(() => showCompleteSection(data), 1000);
-                                }, 1500);
-                            }
-                        } else if (data.status === 'error') {
-                            clearInterval(progressInterval);
-                            showToast('Download failed: ' + data.message, 'error');
-                            resetUI();
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Progress monitoring error:', error);
-                    });
-            }, 1000);
-        }
-        
-        function triggerDownload(taskId, fileData = null) {
-            showToast('Downloading your file...', 'info');
-            
-            // Create hidden iframe for download
-            const iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            iframe.src = `/api/download-file/${taskId}`;
-            document.body.appendChild(iframe);
-            
-            // Also create direct link for backup
-            const link = document.createElement('a');
-            link.href = `/api/download-file/${taskId}`;
-            
-            if (fileData && fileData.filename) {
-                link.download = fileData.filename;
-            }
-            
-            link.click();
-            
-            // Cleanup
-            setTimeout(() => {
-                if (iframe.parentNode) {
-                    iframe.parentNode.removeChild(iframe);
-                }
-                if (link.parentNode) {
-                    link.parentNode.removeChild(link);
-                }
-            }, 5000);
-            
-            showToast('File download started! Check your downloads folder.', 'success');
-        }
-        
-        function showCompleteSection(data) {
-            document.getElementById('progressSection').style.display = 'none';
-            document.getElementById('processingSection').style.display = 'none';
-            
-            const completeSection = document.getElementById('completeSection');
-            completeSection.style.display = 'block';
-            
-            // Update file details
-            document.getElementById('fileNameText').textContent = 
-                data.filename || data.title || 'download';
-            
-            if (data.filesize) {
-                const sizeMB = (data.filesize / (1024 * 1024)).toFixed(2);
-                document.getElementById('fileSizeText').textContent = `${sizeMB} MB`;
-            }
-            
-            if (data.filetype) {
-                document.getElementById('fileTypeText').textContent = 
-                    data.filetype.toUpperCase().replace('.', '');
-            }
-            
-            // Update file info text
-            const type = data.type === 'audio' ? 'Audio' : 'Video';
-            document.getElementById('fileInfoText').textContent = 
-                `${type} File | ${data.title ? data.title.substring(0, 50) : 'Download'}`;
-            
-            completeSection.scrollIntoView({behavior: 'smooth', block: 'center'});
-            
-            // Update download again button
-            const downloadAgainBtn = document.getElementById('downloadFileBtn');
-            downloadAgainBtn.onclick = () => triggerDownload(currentTaskId, data);
-        }
-        
-        function resetUI() {
-            currentTaskId = null;
-            autoDownloadAttempted = false;
-            
-            if (progressInterval) {
-                clearInterval(progressInterval);
-                progressInterval = null;
-            }
-            
-            // Hide all status sections
-            document.getElementById('progressSection').style.display = 'none';
-            document.getElementById('processingSection').style.display = 'none';
-            document.getElementById('completeSection').style.display = 'none';
-            
-            // Reset progress
-            document.getElementById('progressBar').style.width = '0%';
-            document.getElementById('progressPercent').textContent = '0%';
-            document.getElementById('progressMessage').textContent = 'Starting download...';
-            
-            // Clear URL input
-            document.getElementById('urlInput').value = '';
-        }
-        
-        function showToast(message, type = 'info') {
-            const icons = {
-                success: 'fas fa-check-circle',
-                error: 'fas fa-exclamation-circle',
-                info: 'fas fa-info-circle',
-                warning: 'fas fa-exclamation-triangle'
-            };
-            
-            const colors = {
-                success: '#10b981',
-                error: '#ef4444',
-                info: '#06b6d4',
-                warning: '#f59e0b'
-            };
-            
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            toast.innerHTML = `
-                <i class="${icons[type] || icons.info} toast-icon"></i>
-                <span>${message}</span>
-            `;
-            
-            document.getElementById('toastContainer').appendChild(toast);
-            
-            // Auto remove after 5 seconds
-            setTimeout(() => {
-                if (toast.parentNode) {
-                    toast.parentNode.removeChild(toast);
-                }
-            }, 5000);
-            
-            // Click to dismiss
-            toast.addEventListener('click', () => {
-                if (toast.parentNode) {
-                    toast.parentNode.removeChild(toast);
-                }
-            });
-        }
+    });
+}
     </script>
 </body>
 </html>
