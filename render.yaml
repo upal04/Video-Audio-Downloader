@@ -2,16 +2,19 @@ services:
   - type: web
     name: rons-downloader
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    buildCommand: |
+      pip install -r requirements.txt
+      pip install gunicorn
+      apt-get update && apt-get install -y ffmpeg
+    startCommand: gunicorn --worker-class gevent --workers 2 --timeout 300 --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: YTDL_NO_UPDATE
         value: 1
-      - key: SLEEP_INTERVAL
-        value: 2
     plan: free
+    healthCheckPath: /health
+    autoDeploy: true
     disk:
       name: downloads
       mountPath: /opt/render/project/src/downloads
