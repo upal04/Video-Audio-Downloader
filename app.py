@@ -88,33 +88,40 @@ def download_direct(url, download_type, task_id):
     try:
         task = download_tasks[task_id]
         
-        # yt-dlp options - WORKS FOR 1000+ SITES
         ydl_opts = {
-            'format': 'bestaudio/best' if download_type == 'audio' else 'best',
-            'outtmpl': os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 60,
-            'retries': 3,
-            'fragment_retries': 3,
-            'user_agent': get_random_user_agent(),
-            'http_headers': {
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Referer': 'https://www.google.com/',
-            },
-            'progress_hooks': [lambda d: progress_hook(d, task_id)],
-            # Add more extractors
-            'extractor_args': {
-                'youtube': {'player_client': ['android']},
-                'instagram': {},
-                'facebook': {},
-                'twitter': {},
-                'tiktok': {}
-            },
-            # Force generic extractor for unknown sites
-            'force_generic_extractor': False,
-        }
+    'format': 'bestaudio/best' if download_type == 'audio' else 'best',
+    'outtmpl': os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s'),
+    'quiet': True,
+    'no_warnings': True,
+    'socket_timeout': 60,
+    'retries': 3,
+    'fragment_retries': 3,
+    'user_agent': get_random_user_agent(),
+    'http_headers': {
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://www.google.com/',
+    },
+    'progress_hooks': [lambda d: progress_hook(d, task_id)],
+    # FIX YOUTUBE BOT ERROR:
+    'cookiefile': 'cookies.txt',
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'web'],
+            'skip': ['dash', 'hls']
+        },
+        'instagram': {},
+        'facebook': {},
+        'twitter': {},
+        'tiktok': {}
+    },
+    # Force cookies and browser-like behavior
+    'http_chunk_size': 10485760,
+    'ignoreerrors': True,
+    'no_check_certificate': True,
+    # Force generic extractor for unknown sites
+    'force_generic_extractor': False,
+}
         
         if download_type == 'audio':
             ydl_opts['postprocessors'] = [{
