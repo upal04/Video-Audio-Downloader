@@ -1,364 +1,274 @@
 import os
 import time
 import random
+import shutil
 import yt_dlp
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, Response
 import uuid
-from pathlib import Path
 from datetime import datetime
 import threading
+import requests
+import re
+from urllib.parse import urlparse, parse_qs
 
 app = Flask(__name__)
+
+# ========== INITIAL CHECKS ==========
+def check_ffmpeg():
+    """Check if ffmpeg is available"""
+    ffmpeg_path = shutil.which('ffmpeg')
+    if not ffmpeg_path:
+        print("⚠️  WARNING: FFmpeg not found in PATH.")
+        print("   Audio extraction may fail.")
+        return False
+    print(f"✅ FFmpeg found at: {ffmpeg_path}")
+    return True
+
+# Run checks on startup
+print("=" * 50)
+print("🎬 RON's Downloader - Starting Server")
+print("=" * 50)
+check_ffmpeg()
 
 # ========== CONFIGURATION ==========
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 app.config['DOWNLOAD_FOLDER'] = DOWNLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here')
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret-key-change-in-production')
 
 # ========== GLOBAL VARIABLES ==========
 download_tasks = {}
 
 # ========== USER AGENTS ==========
 USER_AGENTS = [
-    # Desktop Chrome
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    # Firefox
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    # Safari
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-    # Mobile
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36',
-    'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36',
-    # Edge
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0'
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1'
 ]
 
-# ========== HELPER FUNCTIONS ==========
 def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
-def setup_cookies():
-    """Setup cookies from environment or file"""
-    # Try environment variable (for Render.com)
-    cookies_env = os.environ.get('YOUTUBE_COOKIES')
-    if cookies_env:
-        try:
-            with open('cookies.txt', 'w', encoding='utf-8') as f:
-                f.write(cookies_env)
-            print("✓ Cookies loaded from environment")
-            return 'cookies.txt'
-        except Exception as e:
-            print(f"✗ Failed to write cookies: {e}")
-    
-    # Try local file
-    if os.path.exists('cookies.txt'):
-        print("✓ Cookies loaded from file")
-        return 'cookies.txt'
-    
-    print("⚠ No cookies found - YouTube may block some videos")
-    return None
+# ========== SITE SUPPORT CHECK ==========
+SUPPORTED_SITES = {
+    'youtube.com': True,
+    'youtu.be': True,
+    'instagram.com': True,
+    'facebook.com': True,
+    'fb.watch': True,
+    'twitter.com': True,
+    'x.com': True,
+    'tiktok.com': True,
+    'vm.tiktok.com': True,
+    'vimeo.com': True,
+    'dailymotion.com': True,
+    'twitch.tv': True,
+    'reddit.com': True,
+    'soundcloud.com': True,
+    'bandcamp.com': True,
+    'spotify.com': True,
+    'pinterest.com': True,
+    'likee.video': True,
+    'bilibili.com': True,
+    'rutube.ru': True
+}
 
-def clean_filename(filename):
-    """Clean filename for safe saving"""
-    if not filename:
-        return "video_download"
-    
-    # Remove invalid characters
-    invalid_chars = '<>:"/\\|?*\'"'
-    for char in invalid_chars:
-        filename = filename.replace(char, '')
-    
-    # Replace spaces and trim
-    filename = filename.replace(' ', '_')
-    filename = filename[:80]  # Limit length
-    
-    return filename
+def is_supported_site(url):
+    """Check if URL is from supported site"""
+    for site in SUPPORTED_SITES.keys():
+        if site in url:
+            return True
+    return False
 
-# ========== YT-DLP CONFIGURATION ==========
-def get_ydl_options(download_type='video'):
-    """Get yt-dlp options with anti-bot measures"""
-    
-    # Format selection
-    if download_type == 'audio':
-        format_spec = 'bestaudio[ext=m4a]/bestaudio/best'
-        postprocessors = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'm4a',
-            'preferredquality': '192',
-        }]
-    else:  # video
-        # Limit to 720p to reduce bandwidth and avoid 1080p+ issues
-        format_spec = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best'
-        postprocessors = []
-    
-    # Setup cookies
-    cookies_path = setup_cookies()
-    
-    # Random user agent
-    user_agent = get_random_user_agent()
-    
-    # Check if mobile
-    is_mobile = any(x in user_agent for x in ['Mobile', 'iPhone', 'Android'])
-    
-    # Different settings for mobile vs desktop
-    if is_mobile:
-        extractor_args = {
-            'youtube': {
-                'player_client': ['android', 'ios'],
-                'player_skip': ['configs', 'js', 'webpage'],
-            }
-        }
-    else:
-        extractor_args = {
-            'youtube': {
-                'player_client': ['web'],
-                'player_skip': ['configs'],
-            }
-        }
-    
-    # Return options
-    return {
-        'format': format_spec,
-        'outtmpl': os.path.join(app.config['DOWNLOAD_FOLDER'], '%(title).80s.%(ext)s'),
-        'quiet': True,
-        'no_warnings': False,
-        'ignoreerrors': False,
-        'socket_timeout': 60,
-        'retries': 15,
-        'fragment_retries': 15,
-        'skip_unavailable_fragments': True,
-        'user_agent': user_agent,
-        'cookiefile': cookies_path,
-        'extract_flat': False,
-        'force_ipv4': True,
-        'sleep_interval_requests': random.randint(1, 3),
-        'sleep_interval': random.randint(1, 3),
-        'http_headers': {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Accept-Charset': 'utf-8, iso-8859-1;q=0.5',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-            'DNT': '1',
-            'Referer': 'https://www.youtube.com/',
-        },
-        'postprocessors': postprocessors,
-        'extractor_args': extractor_args,
-        'progress_hooks': [],
-        # YouTube specific
-        'youtube_include_dash_manifest': False,
-        'youtube_include_hls_manifest': False,
-        'ignore_no_formats_error': True,
-        'compat_opts': ['no-youtube-unavailable-videos'],
-        'extractor_retries': 3,
-        'dynamic_mpd': False,
-        'merge_output_format': 'mp4',
-        'concurrent_fragment_downloads': 3,  # Download multiple fragments at once
-    }
-
-# ========== PROGRESS HOOK ==========
-class DownloadProgressHook:
-    def __init__(self, task_id):
-        self.task_id = task_id
-    
-    def hook(self, d):
-        if self.task_id not in download_tasks:
-            return
-        
-        task = download_tasks[self.task_id]
-        
-        if d['status'] == 'downloading':
-            # Get percentage
-            percent_str = d.get('_percent_str', '0%')
-            percent = percent_str.replace('%', '').strip()
-            
-            try:
-                percent_float = float(percent) if percent.replace('.', '').isdigit() else 0
-                task['progress'] = percent_float
-                
-                # Create message
-                message = f"Downloading: {percent}%"
-                if '_speed_str' in d and d['_speed_str']:
-                    message += f" ({d['_speed_str']})"
-                if '_eta_str' in d and d['_eta_str']:
-                    message += f" - ETA: {d['_eta_str']}"
-                
-                task['message'] = message
-                task['status'] = 'downloading'
-                
-            except ValueError:
-                task['progress'] = 0
-        
-        elif d['status'] == 'finished':
-            task['progress'] = 100
-            task['status'] = 'processing'
-            task['message'] = 'Processing file...'
-        
-        elif d['status'] == 'error':
-            task['status'] = 'error'
-            task['message'] = str(d.get('error', 'Unknown error'))
-
-# ========== DOWNLOAD PROCESSING ==========
-def process_download(task_id, url, download_type):
-    """Process download in background thread"""
+# ========== DIRECT YT-DLP DOWNLOAD ==========
+def download_direct(url, download_type, task_id):
+    """Direct download using yt-dlp - SUPPORTS ALL SITES"""
     try:
         task = download_tasks[task_id]
-        task['status'] = 'preparing'
-        task['message'] = 'Initializing download...'
         
-        # Generate unique filename
-        unique_id = str(uuid.uuid4())[:6]
+        # yt-dlp options - WORKS FOR 1000+ SITES
+        ydl_opts = {
+            'format': 'bestaudio/best' if download_type == 'audio' else 'best',
+            'outtmpl': os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s'),
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 60,
+            'retries': 3,
+            'fragment_retries': 3,
+            'user_agent': get_random_user_agent(),
+            'http_headers': {
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Referer': 'https://www.google.com/',
+            },
+            'progress_hooks': [lambda d: progress_hook(d, task_id)],
+            # Add more extractors
+            'extractor_args': {
+                'youtube': {'player_client': ['android']},
+                'instagram': {},
+                'facebook': {},
+                'twitter': {},
+                'tiktok': {}
+            },
+            # Force generic extractor for unknown sites
+            'force_generic_extractor': False,
+        }
         
-        # Configure yt-dlp
-        ydl_opts = get_ydl_options(download_type)
-        progress_hook = DownloadProgressHook(task_id)
-        ydl_opts['progress_hooks'] = [progress_hook.hook]
-        
-        # Update task
-        task['status'] = 'getting_info'
-        task['message'] = 'Fetching video information...'
+        if download_type == 'audio':
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+            ydl_opts['format'] = 'bestaudio/best'
+        else:
+            ydl_opts['format'] = 'best[ext=mp4]/best[ext=webm]/best'
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Get video info with retry
-            info = None
-            for attempt in range(3):
-                try:
-                    info = ydl.extract_info(url, download=False)
-                    break
-                except Exception as e:
-                    if attempt == 2:
-                        raise
-                    time.sleep(2 ** attempt)  # Exponential backoff
-                    ydl_opts['user_agent'] = get_random_user_agent()
+            # Get info first
+            info = ydl.extract_info(url, download=False)
             
-            if not info:
-                raise Exception("Failed to get video information")
+            # Extract site name
+            domain = urlparse(url).netloc
+            site_name = domain.replace('www.', '').split('.')[0].capitalize()
             
-            # Extract info
-            title = info.get('title', 'video')
-            clean_title = clean_filename(title)
-            duration = info.get('duration', 0)
+            task['title'] = info.get('title', f'{site_name} video')
+            task['duration'] = info.get('duration', 0)
+            task['thumbnail'] = info.get('thumbnail')
+            task['site'] = site_name
             
-            # Update task with video info
-            task['title'] = title
-            task['duration'] = duration
-            task['status'] = 'downloading'
-            task['message'] = 'Starting download...'
+            # Download
+            ydl.download([url])
             
-            # Determine file extension
-            ext = 'm4a' if download_type == 'audio' else 'mp4'
-            filename = f"{clean_title}_{unique_id}.{ext}"
-            filepath = os.path.join(app.config['DOWNLOAD_FOLDER'], filename)
-            
-            # Update output template
-            ydl_opts['outtmpl'] = filepath.replace(f'.{ext}', '.%(ext)s')
-            
-            # Try download with retries
-            max_retries = 4
-            for attempt in range(max_retries):
-                try:
-                    ydl = yt_dlp.YoutubeDL(ydl_opts)
-                    result = ydl.download([url])
+            # Find downloaded file
+            for file in os.listdir(app.config['DOWNLOAD_FOLDER']):
+                if file.startswith(task_id):
+                    filepath = os.path.join(app.config['DOWNLOAD_FOLDER'], file)
+                    filesize = os.path.getsize(filepath)
                     
-                    # Find the downloaded file
-                    downloaded_file = None
-                    for file in os.listdir(app.config['DOWNLOAD_FOLDER']):
-                        if unique_id in file or clean_title.replace(' ', '_') in file:
-                            downloaded_file = os.path.join(app.config['DOWNLOAD_FOLDER'], file)
-                            break
+                    # Get file extension
+                    ext = os.path.splitext(file)[1].lower()
+                    if not ext:
+                        ext = '.mp4' if download_type == 'video' else '.mp3'
                     
-                    if not downloaded_file:
-                        # Try to find any new file
-                        files_before = set(os.listdir(app.config['DOWNLOAD_FOLDER']))
-                        time.sleep(2)
-                        files_after = set(os.listdir(app.config['DOWNLOAD_FOLDER']))
-                        new_files = files_after - files_before
-                        if new_files:
-                            downloaded_file = os.path.join(app.config['DOWNLOAD_FOLDER'], list(new_files)[0])
+                    # Determine mimetype
+                    if ext in ['.mp4', '.webm', '.mov']:
+                        mimetype = 'video/mp4'
+                        filetype = ext
+                    elif ext in ['.mp3', '.m4a', '.aac', '.flac', '.wav']:
+                        mimetype = 'audio/mpeg'
+                        filetype = ext
+                    else:
+                        mimetype = 'application/octet-stream'
+                        filetype = ext
                     
-                    if not downloaded_file or not os.path.exists(downloaded_file):
-                        raise FileNotFoundError("Downloaded file not found")
-                    
-                    # Get file info
-                    filesize = os.path.getsize(downloaded_file)
-                    actual_filename = os.path.basename(downloaded_file)
-                    
-                    # Update task with success
                     task.update({
                         'status': 'completed',
                         'progress': 100,
-                        'message': 'Download completed successfully!',
-                        'filename': actual_filename,
+                        'filename': file,
                         'filesize': filesize,
-                        'filepath': downloaded_file,
+                        'filepath': filepath,
+                        'filetype': filetype,
+                        'mimetype': mimetype,
                         'completed': True,
                         'completed_at': datetime.now().isoformat(),
-                        'error': None
+                        'method': 'direct'
                     })
-                    
-                    print(f"✓ Download completed: {actual_filename} ({filesize} bytes)")
-                    return
-                    
-                except yt_dlp.utils.DownloadError as e:
-                    error_msg = str(e)
-                    
-                    # Check for bot detection
-                    if "Sign in" in error_msg or "bot" in error_msg or "confirm you're not a bot" in error_msg:
-                        if attempt < max_retries - 1:
-                            wait_time = (2 ** attempt) + random.randint(1, 3)
-                            task['message'] = f'Retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...'
-                            time.sleep(wait_time)
-                            
-                            # Rotate user agent
-                            ydl_opts['user_agent'] = get_random_user_agent()
-                            
-                            # Switch to mobile user agent on last retry
-                            if attempt == max_retries - 2:
-                                mobile_agents = [ua for ua in USER_AGENTS if 'Mobile' in ua or 'Android' in ua or 'iPhone' in ua]
-                                if mobile_agents:
-                                    ydl_opts['user_agent'] = random.choice(mobile_agents)
-                                    task['message'] = 'Trying mobile user agent...'
-                        else:
-                            # Final failure
-                            task.update({
-                                'status': 'error',
-                                'message': 'YouTube blocked the request. This video requires login or is not available.',
-                                'error': 'YouTube bot detection triggered',
-                                'completed': False
-                            })
-                            return
-                    else:
-                        # Other error
-                        if attempt < max_retries - 1:
-                            time.sleep(2 ** attempt)
-                            continue
-                        else:
-                            raise
-            
+                    return True
+        
+        return False
+        
     except Exception as e:
         error_msg = str(e)
-        print(f"✗ Download error for task {task_id}: {error_msg}")
+        print(f"Download error for {url}: {error_msg}")
+        task['error'] = error_msg[:200]
         
-        if task_id in download_tasks:
-            download_tasks[task_id].update({
+        # Specific error handling
+        if "Unsupported URL" in error_msg:
+            task['error_type'] = 'unsupported_url'
+        elif "Sign in" in error_msg or "private" in error_msg:
+            task['error_type'] = 'private_video'
+        elif "ffmpeg" in error_msg.lower():
+            task['error_type'] = 'ffmpeg_error'
+        
+        return False
+
+def progress_hook(d, task_id):
+    """Progress hook for yt-dlp"""
+    if task_id not in download_tasks:
+        return
+    
+    task = download_tasks[task_id]
+    
+    if d['status'] == 'downloading':
+        if '_percent_str' in d:
+            percent = d['_percent_str'].replace('%', '').strip()
+            try:
+                task['progress'] = float(percent)
+                task['status'] = 'downloading'
+                task['message'] = f'Downloading: {percent}%'
+            except:
+                task['progress'] = 0
+        # Add speed and ETA
+        if '_speed_str' in d:
+            task['speed'] = d['_speed_str'].strip()
+        if '_eta_str' in d:
+            task['eta'] = d['_eta_str'].strip()
+    
+    elif d['status'] == 'finished':
+        task['progress'] = 100
+        task['status'] = 'processing'
+        task['message'] = 'Processing file...'
+
+# ========== DOWNLOAD PROCESSING ==========
+def process_download(task_id, url, download_type):
+    """Main download processor - WORKS FOR ALL SITES"""
+    try:
+        task = download_tasks[task_id]
+        
+        # Check if URL is valid
+        if not url.startswith(('http://', 'https://')):
+            task.update({
                 'status': 'error',
-                'message': f'Download failed: {error_msg[:100]}',
-                'error': error_msg,
+                'message': 'Invalid URL. Use http:// or https://',
                 'completed': False
             })
+            return
+        
+        task['status'] = 'checking_url'
+        task['message'] = 'Checking URL...'
+        
+        # Extract domain for display
+        try:
+            domain = urlparse(url).netloc.replace('www.', '')
+            task['site'] = domain.split('.')[0].capitalize()
+        except:
+            task['site'] = 'Unknown'
+        
+        task['status'] = 'starting'
+        task['message'] = f'Downloading from {task["site"]}...'
+        
+        # Try direct download with yt-dlp (works for 1000+ sites)
+        if download_direct(url, download_type, task_id):
+            return
+        
+        # If failed
+        task.update({
+            'status': 'error',
+            'message': f'Failed to download from {task["site"]}. The site may not be supported.',
+            'completed': False,
+        })
+        
+    except Exception as e:
+        print(f"Download processing error: {str(e)}")
+        task.update({
+            'status': 'error',
+            'message': f'Error: {str(e)[:100]}',
+            'completed': False,
+            'error': str(e)
+        })
 
 # ========== FLASK ROUTES ==========
 @app.route('/')
@@ -367,52 +277,57 @@ def index():
 
 @app.route('/api/download', methods=['POST'])
 def start_download():
-    """Start a new download"""
+    """Start download - ACCEPTS ALL SITES"""
     try:
         data = request.get_json()
-        
-        if not data:
-            return jsonify({'success': False, 'error': 'No data provided'}), 400
-        
         url = data.get('url', '').strip()
         download_type = data.get('type', 'video')
         
         if not url:
             return jsonify({'success': False, 'error': 'URL is required'}), 400
         
-        # Validate URL
-        if not url.startswith('http'):
-            return jsonify({'success': False, 'error': 'Invalid URL format'}), 400
-        
-        # Check if it's YouTube
-        if 'youtube.com' not in url and 'youtu.be' not in url:
+        # Check if valid URL
+        if not url.startswith(('http://', 'https://')):
             return jsonify({
-                'success': False, 
-                'error': 'Currently only YouTube URLs are supported. Support for other platforms coming soon.'
+                'success': False,
+                'error': 'Invalid URL. Must start with http:// or https://'
             }), 400
         
         # Generate task ID
-        task_id = str(uuid.uuid4())[:8]
+        task_id = str(uuid.uuid4())[:12]
+        
+        # Extract site name for display
+        try:
+            domain = urlparse(url).netloc.replace('www.', '')
+            site_name = domain.split('.')[0].capitalize()
+        except:
+            site_name = 'Unknown'
         
         # Create task
         download_tasks[task_id] = {
             'id': task_id,
             'url': url,
             'type': download_type,
-            'status': 'queued',
+            'status': 'starting',
             'progress': 0,
-            'message': 'Waiting to start...',
+            'message': f'Preparing download from {site_name}...',
             'filename': None,
             'filesize': None,
             'filepath': None,
+            'filetype': None,
+            'mimetype': None,
             'title': None,
-            'duration': None,
+            'site': site_name,
             'started_at': datetime.now().isoformat(),
             'completed': False,
-            'error': None
+            'method': None,
+            'error': None,
+            'error_type': None,
+            'speed': None,
+            'eta': None
         }
         
-        # Start download in background
+        # Start in background
         thread = threading.Thread(
             target=process_download,
             args=(task_id, url, download_type),
@@ -420,227 +335,200 @@ def start_download():
         )
         thread.start()
         
-        # Update status
-        download_tasks[task_id]['status'] = 'starting'
-        download_tasks[task_id]['message'] = 'Starting download process...'
-        
         return jsonify({
             'success': True,
             'task_id': task_id,
-            'message': 'Download started successfully. Please wait...'
+            'message': f'Download from {site_name} started'
         })
         
     except Exception as e:
-        print(f"Error in start_download: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to start download. Please try again.'
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/status/<task_id>', methods=['GET'])
 def get_status(task_id):
-    """Get download status"""
+    """Get status"""
     if task_id not in download_tasks:
         return jsonify({'error': 'Task not found'}), 404
     
     task = download_tasks[task_id]
     
-    # Prepare response
-    response = {
+    # Clean old completed tasks (after 5 minutes)
+    if task.get('completed') or task.get('status') == 'error':
+        started = datetime.fromisoformat(task['started_at'].replace('Z', '+00:00'))
+        if (datetime.now() - started).total_seconds() > 300:  # 5 minutes
+            # Delete file if exists
+            if task.get('filepath') and os.path.exists(task['filepath']):
+                try:
+                    os.remove(task['filepath'])
+                except:
+                    pass
+            del download_tasks[task_id]
+            return jsonify({'error': 'Task expired'}), 404
+    
+    return jsonify({
         'task_id': task_id,
         'status': task.get('status', 'unknown'),
-        'progress': float(task.get('progress', 0)),
+        'progress': task.get('progress', 0),
         'message': task.get('message', ''),
         'title': task.get('title', ''),
         'filename': task.get('filename'),
         'filesize': task.get('filesize'),
+        'filetype': task.get('filetype'),
+        'mimetype': task.get('mimetype'),
         'type': task.get('type', 'video'),
+        'site': task.get('site', 'Unknown'),
+        'speed': task.get('speed'),
+        'eta': task.get('eta'),
         'completed': task.get('completed', False),
-        'error': task.get('error')
-    }
-    
-    # Clean up completed tasks after 10 minutes
-    if task.get('completed') or task.get('status') == 'error':
-        completed_time = task.get('completed_at') or task.get('started_at')
-        if completed_time:
-            try:
-                completed_dt = datetime.fromisoformat(completed_time.replace('Z', '+00:00'))
-                if (datetime.now() - completed_dt).total_seconds() > 600:  # 10 minutes
-                    if task_id in download_tasks:
-                        del download_tasks[task_id]
-            except:
-                pass
-    
-    return jsonify(response)
+        'error': task.get('error'),
+        'error_type': task.get('error_type')
+    })
 
 @app.route('/api/download-file/<task_id>', methods=['GET'])
 def download_file(task_id):
-    """Serve the downloaded file"""
+    """Serve file - FIXED TO AUTO-SAVE TO DEVICE"""
     if task_id not in download_tasks:
         return jsonify({'error': 'Task not found'}), 404
     
     task = download_tasks[task_id]
     
-    # Check if download is completed
-    if not task.get('completed') or not task.get('filepath'):
-        return jsonify({'error': 'File not ready or download failed'}), 404
+    # Check if ready
+    if not task.get('completed'):
+        return jsonify({'error': 'File not ready'}), 404
     
-    filepath = task['filepath']
-    filename = task['filename']
-    
-    if not os.path.exists(filepath):
-        return jsonify({'error': 'File not found on server'}), 404
-    
-    try:
-        # Determine MIME type
-        if filename and filename.lower().endswith('.m4a'):
-            mimetype = 'audio/mp4'
-        elif filename and filename.lower().endswith('.mp4'):
-            mimetype = 'video/mp4'
+    # If file exists
+    if task.get('filepath') and os.path.exists(task['filepath']):
+        # Determine filename
+        if task.get('title'):
+            # Clean filename
+            safe_title = re.sub(r'[<>:"/\\|?*]', '', task['title'])
+            safe_title = safe_title.replace('\n', ' ').replace('\r', ' ')
+            safe_title = safe_title[:80].strip()
+            
+            # Get extension from filetype or default
+            ext = task.get('filetype', '')
+            if not ext or ext == 'None':
+                ext = '.mp4' if task['type'] == 'video' else '.mp3'
+            
+            # Ensure extension starts with dot
+            if not ext.startswith('.'):
+                ext = '.' + ext
+            
+            filename = f"{safe_title}{ext}"
         else:
-            mimetype = 'application/octet-stream'
+            filename = task.get('filename', 'download.mp4')
         
-        # Send file
-        response = send_file(
-            filepath,
+        # Determine mimetype
+        mimetype = task.get('mimetype')
+        if not mimetype:
+            if filename.endswith('.mp4'):
+                mimetype = 'video/mp4'
+            elif filename.endswith('.mp3'):
+                mimetype = 'audio/mpeg'
+            elif filename.endswith('.m4a'):
+                mimetype = 'audio/mp4'
+            else:
+                mimetype = 'application/octet-stream'
+        
+        print(f"📥 Sending file: {filename} ({mimetype})")
+        
+        # FIXED: This will auto-save to user's Downloads folder
+        return send_file(
+            task['filepath'],
             as_attachment=True,
             download_name=filename,
             mimetype=mimetype
         )
-        
-        # Add caching headers
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-        
-        return response
-        
-    except Exception as e:
-        print(f"Error serving file: {str(e)}")
-        return jsonify({'error': 'Failed to serve file'}), 500
+    
+    return jsonify({'error': 'File not found'}), 404
 
-@app.route('/api/info', methods=['POST'])
-def get_video_info():
-    """Get video information without downloading"""
+@app.route('/api/check-url', methods=['POST'])
+def check_url():
+    """Check if URL is supported"""
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No data provided', 'available': False}), 400
-        
         url = data.get('url', '').strip()
+        
         if not url:
-            return jsonify({'error': 'URL is required', 'available': False}), 400
+            return jsonify({'supported': False, 'error': 'URL required'}), 400
         
-        # Simple yt-dlp options for info only
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'force_ipv4': True,
-            'socket_timeout': 30,
-            'user_agent': get_random_user_agent(),
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        # Try to extract info with yt-dlp
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'user_agent': get_random_user_agent()
+            }
             
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                return jsonify({
+                    'supported': True,
+                    'title': info.get('title', 'Unknown'),
+                    'duration': info.get('duration', 0),
+                    'thumbnail': info.get('thumbnail'),
+                    'site': urlparse(url).netloc.replace('www.', '')
+                })
+        except:
             return jsonify({
-                'title': info.get('title'),
-                'duration': info.get('duration'),
-                'thumbnail': info.get('thumbnail'),
-                'uploader': info.get('uploader'),
-                'available': True
+                'supported': False,
+                'error': 'Cannot extract info. The site may not be supported.'
             })
             
     except Exception as e:
-        error_msg = str(e)
-        return jsonify({
-            'error': f'Failed to get video info: {error_msg[:100]}',
-            'available': False
-        }), 500
+        return jsonify({'supported': False, 'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint for Render"""
+def health():
     return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'downloads_folder': os.path.exists(DOWNLOAD_FOLDER),
-        'active_tasks': len(download_tasks)
+        'status': 'ok',
+        'time': datetime.now().isoformat(),
+        'active_tasks': len(download_tasks),
+        'ffmpeg': shutil.which('ffmpeg') is not None,
+        'supported_sites': list(SUPPORTED_SITES.keys())[:10]  # Show first 10
     })
 
 # ========== CLEANUP ==========
-def cleanup_old_files():
-    """Remove files older than 1 hour"""
+def cleanup():
+    """Clean old files and tasks"""
     try:
-        current_time = time.time()
-        max_age = 3600  # 1 hour
-        
-        for filename in os.listdir(DOWNLOAD_FOLDER):
-            filepath = os.path.join(DOWNLOAD_FOLDER, filename)
+        # Clean old files (older than 1 hour)
+        now = time.time()
+        for file in os.listdir(DOWNLOAD_FOLDER):
+            filepath = os.path.join(DOWNLOAD_FOLDER, file)
             if os.path.isfile(filepath):
-                file_age = current_time - os.path.getmtime(filepath)
-                if file_age > max_age:
+                if now - os.path.getmtime(filepath) > 3600:  # 1 hour
                     try:
                         os.remove(filepath)
-                        print(f"Cleaned up old file: {filename}")
+                        print(f"🧹 Cleaned up old file: {file}")
                     except:
                         pass
+        
+        # Clean old tasks (older than 30 minutes)
+        expired = []
+        for task_id, task in download_tasks.items():
+            started = datetime.fromisoformat(task['started_at'].replace('Z', '+00:00'))
+            if (datetime.now() - started).total_seconds() > 1800:  # 30 minutes
+                expired.append(task_id)
+        
+        for task_id in expired:
+            del download_tasks[task_id]
+            
     except Exception as e:
         print(f"Cleanup error: {e}")
 
-def cleanup_old_tasks():
-    """Remove tasks older than 2 hours"""
-    try:
-        current_time = datetime.now()
-        max_age = 7200  # 2 hours
-        
-        to_remove = []
-        for task_id, task in download_tasks.items():
-            started_at = task.get('started_at')
-            if started_at:
-                try:
-                    started_dt = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-                    age = (current_time - started_dt).total_seconds()
-                    if age > max_age:
-                        to_remove.append(task_id)
-                except:
-                    pass
-        
-        for task_id in to_remove:
-            if task_id in download_tasks:
-                del download_tasks[task_id]
-    except Exception as e:
-        print(f"Task cleanup error: {e}")
-
+# Run cleanup before each request
 @app.before_request
 def before_request():
-    """Run cleanup before each request"""
-    cleanup_old_files()
-    cleanup_old_tasks()
+    cleanup()
 
 # ========== MAIN ==========
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    
-    print("=" * 50)
-    print("🚀 RON's Downloader Server Starting...")
+    print(f"🚀 Server starting on port {port}")
     print(f"📁 Download folder: {os.path.abspath(DOWNLOAD_FOLDER)}")
-    print(f"🌐 Port: {port}")
-    print(f"📦 yt-dlp version: {yt_dlp.version.__version__}")
+    print(f"🌐 Supported sites: {len(SUPPORTED_SITES)}+ platforms")
+    print(f"🔗 Open in browser: http://localhost:{port}")
     print("=" * 50)
-    
-    # Check cookies
-    cookies_path = setup_cookies()
-    if cookies_path:
-        print("✅ Cookies loaded successfully")
-    else:
-        print("⚠ No cookies file found - YouTube may block some videos")
-    
-    # Run app
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=False,
-        threaded=True
-    )
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
