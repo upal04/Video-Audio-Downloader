@@ -89,39 +89,44 @@ def download_direct(url, download_type, task_id):
         task = download_tasks[task_id]
         
         ydl_opts = {
-    'format': 'bestaudio/best' if download_type == 'audio' else 'best',
-    'outtmpl': os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s'),
-    'quiet': True,
-    'no_warnings': True,
-    'socket_timeout': 60,
-    'retries': 3,
-    'fragment_retries': 3,
-    'user_agent': get_random_user_agent(),
-    'http_headers': {
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': 'https://www.google.com/',
-    },
-    'progress_hooks': [lambda d: progress_hook(d, task_id)],
-    # FIX YOUTUBE BOT ERROR:
-    'cookiefile': 'cookies.txt',
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['android', 'web'],
-            'skip': ['dash', 'hls']
-        },
-        'instagram': {},
-        'facebook': {},
-        'twitter': {},
-        'tiktok': {}
-    },
-    # Force cookies and browser-like behavior
-    'http_chunk_size': 10485760,
-    'ignoreerrors': True,
-    'no_check_certificate': True,
-    # Force generic extractor for unknown sites
-    'force_generic_extractor': False,
-}
+            'format': 'bestaudio/best' if download_type == 'audio' else 'best',
+            'outtmpl': os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s'),
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 120,
+            'retries': 5,
+            'fragment_retries': 10,
+            'user_agent': get_random_user_agent(),
+            'http_headers': {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+                'Referer': 'https://www.google.com/',
+            },
+            'progress_hooks': [lambda d: progress_hook(d, task_id)],
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web', 'ios'],
+                    'skip': ['dash', 'hls'],
+                    'throttled_rate': None,
+                },
+                'instagram': {},
+                'facebook': {},
+                'twitter': {},
+                'tiktok': {}
+            },
+            'ignoreerrors': True,
+            'no_check_certificate': True,
+            'force_generic_extractor': False,
+        }
         
         if download_type == 'audio':
             ydl_opts['postprocessors'] = [{
@@ -134,20 +139,35 @@ def download_direct(url, download_type, task_id):
             ydl_opts['format'] = 'best[ext=mp4]/best[ext=webm]/best'
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Get info first
-            info = ydl.extract_info(url, download=False)
-            
-            # Extract site name
-            domain = urlparse(url).netloc
-            site_name = domain.replace('www.', '').split('.')[0].capitalize()
-            
-            task['title'] = info.get('title', f'{site_name} video')
-            task['duration'] = info.get('duration', 0)
-            task['thumbnail'] = info.get('thumbnail')
-            task['site'] = site_name
-            
-            # Download
-            ydl.download([url])
+            try:
+                # Get info first
+                info = ydl.extract_info(url, download=False)
+                
+                if info is None:
+                    task.update({
+                        'error': 'Could not extract video info. The site may be blocking requests.',
+                        'error_type': 'no_info'
+                    })
+                    return False
+                
+                # Extract site name
+                domain = urlparse(url).netloc
+                site_name = domain.replace('www.', '').split('.')[0].capitalize()
+                
+                task['title'] = info.get('title', f'{site_name} video')
+                task['duration'] = info.get('duration', 0)
+                task['thumbnail'] = info.get('thumbnail')
+                task['site'] = site_name
+                
+                # Download
+                ydl.download([url])
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Info extraction error for {url}: {error_msg}")
+                task['error'] = f'Info error: {error_msg[:100]}'
+                task['error_type'] = 'extraction_error'
+                return False
             
             # Find downloaded file
             for file in os.listdir(app.config['DOWNLOAD_FOLDER']):
