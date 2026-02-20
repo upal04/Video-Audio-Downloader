@@ -70,9 +70,26 @@ print(f"FFmpeg: {FFMPEG_PATH or 'not found'}")
 
 
 # ========== YT-DLP OPTIONS ==========
-def get_ydl_opts(download_type, task_id):
+def get_ydl_opts(download_type, task_id, url=''):
     output_template = os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s')
     has_cookies = os.path.exists(COOKIES_FILE)
+
+    # Detect site
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        netloc = ''
+
+    is_facebook = any(x in netloc for x in ['facebook.com', 'fb.watch', 'fb.com'])
+    is_youtube = any(x in netloc for x in ['youtube.com', 'youtu.be'])
+
+    user_agent = (
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+        'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+    ) if is_facebook else (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    )
 
     opts = {
         'outtmpl': output_template,
@@ -85,24 +102,35 @@ def get_ydl_opts(download_type, task_id):
         'no_check_certificate': True,
         'progress_hooks': [lambda d: progress_hook(d, task_id)],
         'http_headers': {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/122.0.0.0 Safari/537.36'
-            ),
+            'User-Agent': user_agent,
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': '*/*',
         },
-        # mweb client works best on server IPs with cookies
-        # it mimics mobile web which has fewer restrictions
-        'extractor_args': {
+    }
+
+    # YouTube-specific
+    if is_youtube:
+        opts['extractor_args'] = {
             'youtube': {
                 'player_client': ['mweb', 'tv_embedded', 'ios', 'android'],
                 'player_skip': ['webpage', 'configs'],
             }
-        },
-    }
+        }
 
+    # Facebook-specific — simpler format selection, mobile UA, cookies
+    if is_facebook:
+        if has_cookies:
+            opts['cookiefile'] = COOKIES_FILE
+        if FFMPEG_PATH and FFMPEG_PATH != 'ffmpeg':
+            opts['ffmpeg_location'] = FFMPEG_PATH
+        if download_type == 'audio' and FFMPEG_PATH:
+            opts['format'] = 'bestaudio/best'
+            opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
+        else:
+            opts['format'] = 'best[ext=mp4]/best'
+        return opts
+
+    # All other sites
     if has_cookies:
         opts['cookiefile'] = COOKIES_FILE
 
@@ -140,8 +168,8 @@ def find_downloaded_file(task_id):
 
 def _friendly_error(error_msg):
     msg = error_msg.lower()
-    if any(x in msg for x in ['sign in', 'login', 'age', 'bot', 'confirm your age', 'empty media', 'not accessible']):
-        return 'YouTube is blocking this download. The cookies may have expired — please refresh them.'
+    if any(x in msg for x in ['sign in', 'login', 'age', 'bot', 'confirm your age', 'empty media', 'not accessible', 'checkpoint']):
+        return 'This video requires login or is restricted. Try a public video link.'
     if 'private' in msg:
         return 'This video is private.'
     if any(x in msg for x in ['unavailable', 'not available', 'removed', 'deleted']):
@@ -195,7 +223,7 @@ def download_direct(url, download_type, task_id):
     if not task:
         return False
     try:
-        ydl_opts = get_ydl_opts(download_type, task_id)
+        ydl_opts = get_ydl_opts(download_type, task_id, url)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
