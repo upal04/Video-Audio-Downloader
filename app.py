@@ -24,11 +24,20 @@ COOKIES_FILE = 'cookies.txt'
 
 # ========== WRITE COOKIES FROM ENV VAR ==========
 def setup_cookies():
-    cookies_content = os.environ.get('COOKIES_CONTENT', '').strip()
-    if cookies_content:
+    # Merge COOKIES_CONTENT and COOKIES_EXTRA into one cookies.txt
+    c1 = os.environ.get('COOKIES_CONTENT', '').strip()
+    c2 = os.environ.get('COOKIES_EXTRA', '').strip()
+    parts = []
+    if c1:
+        parts.append(c1)
+    if c2:
+        lines = [l for l in c2.splitlines() if not l.startswith('# Netscape') and not l.startswith('# This file')]
+        parts.append('\n'.join(lines))
+    if parts:
         with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
-            f.write(cookies_content)
-        print("Cookies loaded from COOKIES_CONTENT env var.")
+            f.write('# Netscape HTTP Cookie File\n')
+            f.write('\n'.join(parts))
+        print(f"Cookies loaded: COOKIES_CONTENT={'yes' if c1 else 'no'}, COOKIES_EXTRA={'yes' if c2 else 'no'}")
     elif os.path.exists(COOKIES_FILE):
         print(f"Cookies loaded from {COOKIES_FILE} file.")
     else:
