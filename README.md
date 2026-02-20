@@ -1,6 +1,7 @@
-<img width="2785" height="1481" alt="image" src="https://github.com/user-attachments/assets/31449ec4-49de-447a-9e85-5a3ca2f664cb" /># 🚀 Video-Audio Downloader
+<img width="2790" height="1484" alt="image_2026-02-20_214514664" src="https://github.com/user-attachments/assets/a588ddb6-ba53-4519-adce-dcb931431861" />
+# 🚀 Video-Audio Downloader
 
-A modern, responsive web application for downloading videos and audio from popular platforms like YouTube, Instagram, Facebook, Twitter, and 1000+ other sites. Built with Flask and yt-dlp.
+A modern, responsive web application for downloading videos and audio from popular platforms like Instagram, Facebook, Twitter, and 1000+ other sites except YouTube. Built with Flask and yt-dlp.
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
 ![Flask](https://img.shields.io/badge/Flask-2.3.3-green.svg)
@@ -24,7 +25,7 @@ A modern, responsive web application for downloading videos and audio from popul
 - **Error Handling**: User-friendly error messages
 
 ### 🔧 Technical Features
-- **Multi-Platform Support**: YouTube, Instagram, Facebook, Twitter/X, TikTok, Vimeo, and 1000+ sites
+- **Multi-Platform Support**: Instagram, Facebook, Twitter/X, TikTok, Vimeo, and 1000+ sites except Youtube
 - **Background Processing**: Downloads run in separate threads
 - **File Management**: Automatic cleanup and organization
 - **RESTful API**: Well-structured backend endpoints
@@ -36,7 +37,8 @@ A modern, responsive web application for downloading videos and audio from popul
 ## 📸 Screenshots
 
 ### Desktop View
-<img width="2785" height="1481" alt="Screenshot 2025-12-19 043132" src="https://github.com/user-attachments/assets/14262717-07cd-4772-bb5a-1add1d248b52" />
+<img width="2790" height="1484" alt="image_2026-02-20_214455517" src="https://github.com/user-attachments/assets/479da124-7574-4c10-83bc-0b7b92591d5b" />
+
 
 
 ## 🛠️ Installation & Setup
