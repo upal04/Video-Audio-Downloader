@@ -66,26 +66,13 @@ def ensure_ffmpeg():
     return shutil.which('ffmpeg')
 
 FFMPEG_PATH = ensure_ffmpeg()
-# Check if ffprobe is available alongside ffmpeg
-def find_ffprobe():
-    if FFMPEG_PATH and 'imageio' in str(FFMPEG_PATH):
-        # imageio_ffmpeg doesn't bundle ffprobe, use system one
-        return shutil.which('ffprobe')
-    if FFMPEG_PATH:
-        # Try ffprobe next to ffmpeg
-        ffprobe = os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe')
-        if os.path.exists(ffprobe):
-            return ffprobe
-        return shutil.which('ffprobe')
-    return None
-
-FFPROBE_PATH = find_ffprobe()
+FFPROBE_PATH = shutil.which('ffprobe')
 print(f"FFmpeg: {FFMPEG_PATH or 'not found'}")
-print(f"FFprobe: {FFPROBE_PATH or 'not found (audio may use m4a fallback)'}")
+print(f"FFprobe: {FFPROBE_PATH or 'not found'}")
 
 
 # ========== YT-DLP OPTIONS ==========
-def get_ydl_opts(download_type, task_id):
+def get_ydl_opts(download_type, task_id, url=""):
     output_template = os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s')
     has_cookies = os.path.exists(COOKIES_FILE)
 
@@ -108,15 +95,30 @@ def get_ydl_opts(download_type, task_id):
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': '*/*',
         },
-        # mweb client works best on server IPs with cookies
-        # it mimics mobile web which has fewer restrictions
-        'extractor_args': {
+    }
+
+    # Detect site for specific handling
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        netloc = ''
+
+    is_facebook = any(x in netloc for x in ['facebook.com', 'fb.watch', 'fb.com'])
+    is_youtube = any(x in netloc for x in ['youtube.com', 'youtu.be'])
+
+    if is_youtube:
+        opts['extractor_args'] = {
             'youtube': {
                 'player_client': ['mweb', 'tv_embedded', 'ios', 'android'],
                 'player_skip': ['webpage', 'configs'],
             }
-        },
-    }
+        }
+
+    if is_facebook:
+        opts['http_headers']['User-Agent'] = (
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+            'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+        )
 
     if has_cookies:
         opts['cookiefile'] = COOKIES_FILE
@@ -125,30 +127,23 @@ def get_ydl_opts(download_type, task_id):
         if FFMPEG_PATH != 'ffmpeg':
             opts['ffmpeg_location'] = FFMPEG_PATH
         if download_type == 'audio':
-            opts['format'] = 'bestaudio/best'
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-                'nopostoverwrites': False,
-            }]
-            # If ffprobe is available, tell yt-dlp where it is
             if FFPROBE_PATH:
-                opts['postprocessor_args'] = {
-                    'ffmpeg': ['-ar', '44100'],
-                }
+                # ffprobe available - full MP3 conversion
+                opts['format'] = 'bestaudio/best'
+                opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
             else:
-                # No ffprobe — skip codec detection to avoid the error
-                opts['postprocessor_args'] = {
-                    'ffmpeg': ['-ar', '44100', '-vn'],
-                }
+                # no ffprobe - download m4a directly, no conversion
+                opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
         else:
             opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
             opts['merge_output_format'] = 'mp4'
     else:
         if download_type == 'audio':
             opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
-            # No postprocessor needed - download as m4a directly
         else:
             opts['format'] = 'best[ext=mp4]/best'
 
@@ -222,7 +217,7 @@ def download_direct(url, download_type, task_id):
     if not task:
         return False
     try:
-        ydl_opts = get_ydl_opts(download_type, task_id)
+        ydl_opts = get_ydl_opts(download_type, task_id, url)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
