@@ -535,32 +535,31 @@ function showSec(name){
 
 function startPoll(){
     if(progressInterval)clearInterval(progressInterval);
-    let pollCount=0;
-    // Wait 2s before first poll — gives backend thread time to start
-    setTimeout(()=>{
-        progressInterval=setInterval(()=>{
-            if(!currentTaskId)return;
-            pollCount++;
-            fetch('/api/status/'+currentTaskId).then(r=>{
-                // If task not found in first 8 seconds, it's a race — ignore silently
-                if(r.status===404&&pollCount<=8)return Promise.reject('not_ready');
-                return r.json();
-            }).then(data=>{
-                if(data.error==='Task expired'){clearInterval(progressInterval);showErr('Download expired. Please try again.');return;}
-                if(data.error){clearInterval(progressInterval);showErr('Error: '+data.error);return;}
-                const p=data.progress||0;
-                document.getElementById('progressPercent').textContent=p+'%';
-                document.getElementById('progressBar').style.width=p+'%';
-                document.getElementById('progressMessage').textContent=data.message||'';
-                document.getElementById('downloadSpeed').textContent=data.speed||'--';
-                document.getElementById('downloadETA').textContent=data.eta||'--';
-                document.getElementById('downloadSite').textContent=data.site||'--';
-                if(data.site)document.getElementById('progressTitle').textContent='Downloading from '+data.site+'...';
-                if(data.completed){clearInterval(progressInterval);showDone(data);}
-                else if(data.status==='error'){clearInterval(progressInterval);showErr(data.message||'Download failed');}
-            }).catch(e=>{if(e!=='not_ready')console.warn('Poll error:',e);});
-        },1000);
-    },2000);
+    let pollStart=Date.now();
+    function doPoll(){
+        if(!currentTaskId)return;
+        fetch('/api/status/'+currentTaskId).then(r=>{
+            // In first 10 seconds, silently ignore 404 — task thread may still be starting
+            if(r.status===404&&(Date.now()-pollStart)<10000)return null;
+            return r.json();
+        }).then(data=>{
+            if(!data)return;
+            if(data.error==='Task expired'){clearInterval(progressInterval);showErr('Download expired. Please try again.');return;}
+            if(data.error){clearInterval(progressInterval);showErr('Error: '+data.error);return;}
+            const p=data.progress||0;
+            document.getElementById('progressPercent').textContent=p+'%';
+            document.getElementById('progressBar').style.width=p+'%';
+            document.getElementById('progressMessage').textContent=data.message||'';
+            document.getElementById('downloadSpeed').textContent=data.speed||'--';
+            document.getElementById('downloadETA').textContent=data.eta||'--';
+            document.getElementById('downloadSite').textContent=data.site||'--';
+            if(data.site)document.getElementById('progressTitle').textContent='Downloading from '+data.site+'...';
+            if(data.completed){clearInterval(progressInterval);showDone(data);}
+            else if(data.status==='error'){clearInterval(progressInterval);showErr(data.message||'Download failed');}
+        }).catch(()=>{});
+    }
+    // Wait 2s before first poll so backend thread has time to register
+    setTimeout(()=>{doPoll();progressInterval=setInterval(doPoll,2000);},2000);
 }
 
 function showDone(data){
