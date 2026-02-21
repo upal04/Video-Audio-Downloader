@@ -539,7 +539,6 @@ function startPoll(){
     function doPoll(){
         if(!currentTaskId)return;
         fetch('/api/status/'+currentTaskId).then(r=>{
-            // Ignore 404 for first 10 seconds — thread may still be starting
             if(r.status===404&&(Date.now()-pollStart)<10000)return null;
             return r.json();
         }).then(data=>{
@@ -558,7 +557,6 @@ function startPoll(){
             else if(data.status==='error'){clearInterval(progressInterval);showErr(data.message||'Download failed');}
         }).catch(()=>{});
     }
-    // Wait 2s before first poll so backend thread has time to register the task
     setTimeout(()=>{doPoll();progressInterval=setInterval(doPoll,2000);},2000);
 }
 
@@ -586,10 +584,13 @@ function resetAll(){
 }
 
 function triggerDownload(tid){
-    const f=document.createElement('iframe');
-    f.style.display='none';f.src='/api/download-file/'+tid+'?t='+Date.now();
-    document.body.appendChild(f);
-    setTimeout(()=>{if(f.parentNode)f.parentNode.removeChild(f);},8000);
+    const a=document.createElement('a');
+    a.href='/api/download-file/'+tid+'?t='+Date.now();
+    a.download='';
+    a.style.display='none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{if(a.parentNode)a.parentNode.removeChild(a);},1000);
 }
 
 function showToast(msg,type='info'){
