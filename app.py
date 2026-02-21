@@ -19,12 +19,10 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 app.config['DOWNLOAD_FOLDER'] = DOWNLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'secret-key-12345')
-
 COOKIES_FILE = 'cookies.txt'
 
-# ========== WRITE COOKIES FROM ENV VAR ==========
+# ========== COOKIES ==========
 def setup_cookies():
-    # Merge COOKIES_CONTENT and COOKIES_EXTRA into one cookies.txt
     c1 = os.environ.get('COOKIES_CONTENT', '').strip()
     c2 = os.environ.get('COOKIES_EXTRA', '').strip()
     parts = []
@@ -37,25 +35,24 @@ def setup_cookies():
         with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
             f.write('# Netscape HTTP Cookie File\n')
             f.write('\n'.join(parts))
-        print(f"Cookies loaded: COOKIES_CONTENT={'yes' if c1 else 'no'}, COOKIES_EXTRA={'yes' if c2 else 'no'}")
+        print(f"Cookies: c1={'yes' if c1 else 'no'}, c2={'yes' if c2 else 'no'}")
     elif os.path.exists(COOKIES_FILE):
-        print(f"Cookies loaded from {COOKIES_FILE} file.")
+        print("Cookies: loaded from file")
     else:
-        print("WARNING: No cookies found.")
+        print("WARNING: No cookies found")
 
 setup_cookies()
 
-# ========== GLOBAL VARIABLES ==========
+# ========== GLOBAL STATE ==========
 download_tasks = {}
 tasks_lock = threading.Lock()
 
-# ========== FFMPEG SETUP ==========
+# ========== FFMPEG ==========
 def ensure_ffmpeg():
-    ffmpeg_cmd = 'ffmpeg.exe' if platform.system() == 'Windows' else 'ffmpeg'
+    cmd = 'ffmpeg.exe' if platform.system() == 'Windows' else 'ffmpeg'
     try:
-        result = subprocess.run([ffmpeg_cmd, '-version'], capture_output=True, text=True)
-        if result.returncode == 0:
-            return ffmpeg_cmd
+        if subprocess.run([cmd, '-version'], capture_output=True).returncode == 0:
+            return cmd
     except FileNotFoundError:
         pass
     try:
@@ -70,58 +67,84 @@ print(f"FFmpeg: {FFMPEG_PATH or 'not found'}")
 
 
 # ========== YT-DLP OPTIONS ==========
-def get_ydl_opts(download_type, task_id, url=""):
+def get_ydl_opts(download_type, task_id, url=''):
     output_template = os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s')
     has_cookies = os.path.exists(COOKIES_FILE)
 
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        netloc = ''
+
+    is_facebook = any(x in netloc for x in ['facebook.com', 'fb.watch', 'fb.com'])
+    is_youtube  = any(x in netloc for x in ['youtube.com', 'youtu.be'])
+
     opts = {
-        'outtmpl': output_template,
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 60,
-        'retries': 10,
-        'fragment_retries': 10,
-        'ignoreerrors': False,
+        'outtmpl':            output_template,
+        'quiet':              True,
+        'no_warnings':        True,
+        'socket_timeout':     30,
+        'retries':            5,
+        'fragment_retries':   5,
+        'ignoreerrors':       False,
         'no_check_certificate': True,
-        'progress_hooks': [lambda d: progress_hook(d, task_id)],
+        'concurrent_fragment_downloads': 4,   # parallel fragments = faster
+        'progress_hooks':     [lambda d: progress_hook(d, task_id)],
         'http_headers': {
             'User-Agent': (
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+                'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                if is_facebook else
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/122.0.0.0 Safari/537.36'
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
             ),
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': '*/*',
         },
-        # mweb client works best on server IPs with cookies
-        # it mimics mobile web which has fewer restrictions
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['mweb', 'tv_embedded', 'ios', 'android'],
-                'player_skip': ['webpage', 'configs'],
-            }
-        },
     }
 
+    # YouTube player args
+    if is_youtube:
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['mweb', 'tv_embedded', 'ios', 'android'],
+                'player_skip':   ['webpage', 'configs'],
+            }
+        }
+
+    # Cookies
     if has_cookies:
         opts['cookiefile'] = COOKIES_FILE
 
-    if FFMPEG_PATH:
-        if FFMPEG_PATH != 'ffmpeg':
-            opts['ffmpeg_location'] = FFMPEG_PATH
-        if download_type == 'audio':
-            opts['format'] = 'bestaudio/best'
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+    # FFmpeg location
+    if FFMPEG_PATH and FFMPEG_PATH not in ('ffmpeg', 'ffmpeg.exe'):
+        opts['ffmpeg_location'] = FFMPEG_PATH
+
+    # ── AUDIO ──
+    if download_type == 'audio':
+        if is_facebook:
+            # Facebook blocks separate audio streams — download full video then extract audio
+            opts['format'] = 'best[ext=mp4]/best'
         else:
-            opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-            opts['merge_output_format'] = 'mp4'
+            # All other sites: pure audio stream
+            opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+
+        if FFMPEG_PATH:
+            opts['postprocessors'] = [{
+                'key':             'FFmpegExtractAudio',
+                'preferredcodec':  'mp3',
+                'preferredquality':'192',
+            }]
+        # No ffmpeg → stays as m4a (pure audio, plays fine everywhere)
+
+    # ── VIDEO ──
     else:
-        if download_type == 'audio':
-            opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
+        if is_facebook:
+            # Facebook: grab best single-file mp4 (no merge needed, avoids issues)
+            opts['format'] = 'best[ext=mp4]/best'
+        elif FFMPEG_PATH:
+            opts['format']               = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+            opts['merge_output_format']  = 'mp4'
         else:
             opts['format'] = 'best[ext=mp4]/best'
 
@@ -140,23 +163,21 @@ def find_downloaded_file(task_id):
 
 def _friendly_error(error_msg):
     msg = error_msg.lower()
-    if any(x in msg for x in ['sign in', 'login', 'age', 'bot', 'confirm your age', 'empty media', 'not accessible']):
-        return 'YouTube is blocking this download. The cookies may have expired — please refresh them.'
+    if any(x in msg for x in ['sign in', 'login required', 'age-restricted', 'bot', 'checkpoint', 'confirm your age']):
+        return 'This video requires login or is age-restricted.'
     if 'private' in msg:
         return 'This video is private.'
-    if any(x in msg for x in ['unavailable', 'not available', 'removed', 'deleted']):
-        return 'This video is unavailable or has been removed.'
     if 'copyright' in msg:
         return 'Blocked due to copyright restrictions.'
-    if any(x in msg for x in ['429', 'rate limit', 'too many']):
+    if any(x in msg for x in ['429', 'rate limit', 'too many requests']):
         return 'Rate limited. Please wait a few minutes and try again.'
-    if any(x in msg for x in ['not supported', 'no video formats', 'unsupported url']):
-        return 'This URL is not supported. Make sure the link is correct and the video is public.'
+    if any(x in msg for x in ['unsupported url', 'no video formats', 'not supported']):
+        return 'This URL is not supported. Make sure the link is correct.'
     if 'ffmpeg' in msg:
-        return 'Audio conversion failed. Try downloading as video instead.'
-    if any(x in msg for x in ['network', 'connection', 'timeout']):
+        return 'Processing failed. Try downloading as video instead.'
+    if any(x in msg for x in ['network', 'timed out', 'connection']):
         return 'Network error. Please try again.'
-    return error_msg[:200]
+    return error_msg[:300]
 
 
 def progress_hook(d, task_id):
@@ -175,8 +196,8 @@ def progress_hook(d, task_id):
                 percent = 0
             with tasks_lock:
                 task['progress'] = min(percent, 99)
-                task['status'] = 'downloading'
-                task['message'] = f'Downloading... {percent:.0f}%'
+                task['status']   = 'downloading'
+                task['message']  = f'Downloading... {percent:.0f}%'
                 if '_speed_str' in d:
                     task['speed'] = d['_speed_str'].strip()
                 if '_eta_str' in d:
@@ -186,8 +207,8 @@ def progress_hook(d, task_id):
     elif d['status'] == 'finished':
         with tasks_lock:
             task['progress'] = 99
-            task['status'] = 'processing'
-            task['message'] = 'Processing file...'
+            task['status']   = 'processing'
+            task['message']  = 'Processing file...'
 
 
 def download_direct(url, download_type, task_id):
@@ -197,8 +218,7 @@ def download_direct(url, download_type, task_id):
     try:
         ydl_opts = get_ydl_opts(download_type, task_id, url)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # extract_info with download=True does everything in ONE network call
-            # much faster than separate extract_info + download
+            # Single call: extract info + download together (fastest approach)
             info = ydl.extract_info(url, download=True)
             if info:
                 title = info.get('title') or info.get('id') or 'Download'
@@ -221,22 +241,26 @@ def download_direct(url, download_type, task_id):
         filename = os.path.basename(filepath)
         ext = os.path.splitext(filename)[1].lower() or ('.mp4' if download_type == 'video' else '.mp3')
         mime_map = {
-            '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
-            '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac',
-            '.flac': 'audio/flac', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+            '.mp4': 'video/mp4',   '.webm': 'video/webm',  '.mov': 'video/quicktime',
+            '.mp3': 'audio/mpeg',  '.m4a':  'audio/mp4',   '.aac': 'audio/aac',
+            '.flac':'audio/flac',  '.wav':  'audio/wav',   '.ogg': 'audio/ogg',
         }
-        mimetype = mime_map.get(ext, 'application/octet-stream')
+        mimetype  = mime_map.get(ext, 'application/octet-stream')
         site_name = urlparse(url).netloc.replace('www.', '').split('.')[0].capitalize()
 
         with tasks_lock:
             task.update({
-                'status': 'completed', 'progress': 100,
-                'filename': filename, 'filesize': filesize,
-                'filepath': filepath, 'filetype': ext,
-                'mimetype': mimetype, 'site': site_name,
-                'completed': True,
+                'status':       'completed',
+                'progress':     100,
+                'filename':     filename,
+                'filesize':     filesize,
+                'filepath':     filepath,
+                'filetype':     ext,
+                'mimetype':     mimetype,
+                'site':         site_name,
+                'completed':    True,
                 'completed_at': datetime.now().isoformat(),
-                'message': 'Download complete!',
+                'message':      'Download complete!',
             })
         return True
 
@@ -248,9 +272,9 @@ def download_direct(url, download_type, task_id):
         return False
     except Exception as e:
         err = str(e)
-        print(f"Unexpected error: {err}")
+        print(f"Error: {err}")
         with tasks_lock:
-            task['error'] = err[:200]
+            task['error'] = err[:300]
         return False
 
 
@@ -259,14 +283,10 @@ def process_download(task_id, url, download_type):
     if not task:
         return
     try:
-        if not url.startswith(('http://', 'https://')):
-            with tasks_lock:
-                task.update({'status': 'error', 'message': 'Invalid URL', 'completed': False})
-            return
         site_name = urlparse(url).netloc.replace('www.', '').split('.')[0].capitalize()
         with tasks_lock:
-            task['status'] = 'starting'
-            task['site'] = site_name
+            task['status']  = 'starting'
+            task['site']    = site_name
             task['message'] = f'Connecting to {site_name}...'
 
         success = download_direct(url, download_type, task_id)
@@ -277,7 +297,7 @@ def process_download(task_id, url, download_type):
     except Exception as e:
         print(f"process_download error: {e}")
         with tasks_lock:
-            task.update({'status': 'error', 'message': str(e)[:100], 'completed': False})
+            task.update({'status': 'error', 'message': str(e)[:200], 'completed': False})
 
 
 # ========== ROUTES ==========
@@ -301,7 +321,7 @@ def start_download():
         if download_type not in ('video', 'audio'):
             download_type = 'video'
 
-        task_id = str(uuid.uuid4())[:12]
+        task_id   = str(uuid.uuid4())[:12]
         site_name = urlparse(url).netloc.replace('www.', '').split('.')[0].capitalize()
 
         with tasks_lock:
@@ -316,7 +336,11 @@ def start_download():
                 'completed': False, 'speed': None, 'eta': None, 'error': None,
             }
 
-        threading.Thread(target=process_download, args=(task_id, url, download_type), daemon=True).start()
+        threading.Thread(
+            target=process_download,
+            args=(task_id, url, download_type),
+            daemon=True
+        ).start()
         return jsonify({'success': True, 'task_id': task_id})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -330,8 +354,10 @@ def get_status(task_id):
         task = dict(download_tasks[task_id])
 
     try:
-        age = (datetime.now() - datetime.fromisoformat(task['started_at'])).total_seconds()
-        if age > 1800 and (task.get('completed') or task.get('status') == 'error'):
+        age         = (datetime.now() - datetime.fromisoformat(task['started_at'])).total_seconds()
+        is_finished = task.get('completed') or task.get('status') == 'error'
+        # Only expire finished tasks after 30 minutes — never expire running tasks
+        if age > 1800 and is_finished:
             fp = task.get('filepath', '')
             if fp and os.path.exists(fp):
                 try: os.remove(fp)
@@ -343,13 +369,20 @@ def get_status(task_id):
         pass
 
     return jsonify({
-        'task_id': task_id, 'status': task.get('status', 'unknown'),
-        'progress': task.get('progress', 0), 'message': task.get('message', ''),
-        'title': task.get('title', ''), 'filename': task.get('filename'),
-        'filesize': task.get('filesize'), 'filetype': task.get('filetype'),
-        'mimetype': task.get('mimetype'), 'type': task.get('type', 'video'),
-        'site': task.get('site', 'Unknown'), 'speed': task.get('speed'),
-        'eta': task.get('eta'), 'completed': task.get('completed', False),
+        'task_id':   task_id,
+        'status':    task.get('status', 'unknown'),
+        'progress':  task.get('progress', 0),
+        'message':   task.get('message', ''),
+        'title':     task.get('title', ''),
+        'filename':  task.get('filename'),
+        'filesize':  task.get('filesize'),
+        'filetype':  task.get('filetype'),
+        'mimetype':  task.get('mimetype'),
+        'type':      task.get('type', 'video'),
+        'site':      task.get('site', 'Unknown'),
+        'speed':     task.get('speed'),
+        'eta':       task.get('eta'),
+        'completed': task.get('completed', False),
     })
 
 
@@ -365,15 +398,18 @@ def download_file(task_id):
     if not filepath or not os.path.exists(filepath):
         return jsonify({'error': 'File not found'}), 404
 
-    title = task.get('title') or 'download'
+    title      = task.get('title') or 'download'
     safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', title).strip()[:80] or 'download'
-    ext = task.get('filetype') or ('.mp4' if task.get('type') == 'video' else '.mp3')
+    ext        = task.get('filetype') or ('.mp4' if task.get('type') == 'video' else '.mp3')
     if not ext.startswith('.'):
         ext = '.' + ext
 
-    return send_file(filepath, as_attachment=True,
-                     download_name=f"{safe_title}{ext}",
-                     mimetype=task.get('mimetype') or 'application/octet-stream')
+    return send_file(
+        filepath,
+        as_attachment=True,
+        download_name=f"{safe_title}{ext}",
+        mimetype=task.get('mimetype') or 'application/octet-stream'
+    )
 
 
 @app.route('/health', methods=['GET'])
@@ -381,11 +417,12 @@ def health():
     with tasks_lock:
         active = len(download_tasks)
     return jsonify({
-        'status': 'ok', 'time': datetime.now().isoformat(),
-        'active_tasks': active,
-        'ffmpeg': FFMPEG_PATH or 'not found',
-        'yt_dlp_version': yt_dlp.version.__version__,
-        'cookies_loaded': os.path.exists(COOKIES_FILE),
+        'status':           'ok',
+        'time':             datetime.now().isoformat(),
+        'active_tasks':     active,
+        'ffmpeg':           FFMPEG_PATH or 'not found',
+        'yt_dlp_version':   yt_dlp.version.__version__,
+        'cookies_loaded':   os.path.exists(COOKIES_FILE),
     })
 
 
