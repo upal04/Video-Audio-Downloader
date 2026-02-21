@@ -535,11 +535,11 @@ function showSec(name){
 
 function startPoll(){
     if(progressInterval)clearInterval(progressInterval);
-    let pollStart=Date.now();
+    const pollStart=Date.now();
     function doPoll(){
         if(!currentTaskId)return;
         fetch('/api/status/'+currentTaskId).then(r=>{
-            // In first 10 seconds, silently ignore 404 — task thread may still be starting
+            // Ignore 404 for first 10 seconds — thread may still be starting
             if(r.status===404&&(Date.now()-pollStart)<10000)return null;
             return r.json();
         }).then(data=>{
@@ -558,7 +558,7 @@ function startPoll(){
             else if(data.status==='error'){clearInterval(progressInterval);showErr(data.message||'Download failed');}
         }).catch(()=>{});
     }
-    // Wait 2s before first poll so backend thread has time to register
+    // Wait 2s before first poll so backend thread has time to register the task
     setTimeout(()=>{doPoll();progressInterval=setInterval(doPoll,2000);},2000);
 }
 
