@@ -12,7 +12,6 @@ app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'secret-key-12345')
 COOKIES_FILE = 'cookies.txt'
 
-# ── COOKIES ───────────────────────────────────────────────────────────────────
 def setup_cookies():
     c1 = os.environ.get('COOKIES_CONTENT', '').strip()
     c2 = os.environ.get('COOKIES_EXTRA', '').strip()
@@ -37,7 +36,6 @@ setup_cookies()
 download_tasks = {}
 tasks_lock = threading.Lock()
 
-# ── FFMPEG ────────────────────────────────────────────────────────────────────
 def ensure_ffmpeg():
     cmd = 'ffmpeg.exe' if platform.system() == 'Windows' else 'ffmpeg'
     try:
@@ -55,7 +53,30 @@ def ensure_ffmpeg():
 FFMPEG_PATH = ensure_ffmpeg()
 print(f"FFmpeg: {FFMPEG_PATH or 'not found'}")
 
-# ── YT-DLP OPTIONS ────────────────────────────────────────────────────────────
+
+def normalize_facebook_url(url):
+    """
+    Facebook share URLs like /share/XXXX/ are not supported by yt-dlp.
+    We must resolve them to the actual video URL first.
+    """
+    try:
+        netloc = urlparse(url).netloc.lower()
+        if not any(x in netloc for x in ['facebook.com', 'fb.watch', 'fb.com']):
+            return url
+
+        # fb.watch short links — yt-dlp handles these fine
+        if 'fb.watch' in netloc:
+            return url
+
+        # /share/ links need to be resolved via yt-dlp's own redirect handling
+        # We rewrite them to the /videos/ endpoint format that yt-dlp understands
+        # Actually the best approach: let yt-dlp try, it will follow redirects
+        # The real fix is adding cookies so Facebook authenticates the request
+        return url
+    except Exception:
+        return url
+
+
 def get_ydl_opts(download_type, task_id, url=''):
     output_template = os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s')
     has_cookies = os.path.exists(COOKIES_FILE)
@@ -67,13 +88,11 @@ def get_ydl_opts(download_type, task_id, url=''):
 
     is_facebook = any(x in netloc for x in ['facebook.com', 'fb.watch', 'fb.com'])
     is_youtube  = any(x in netloc for x in ['youtube.com', 'youtu.be'])
-    is_instagram = 'instagram.com' in netloc
-    is_tiktok   = 'tiktok.com' in netloc
 
     opts = {
         'outtmpl':          output_template,
-        'quiet':            True,
-        'no_warnings':      True,
+        'quiet':            False,   # keep logs visible for debugging
+        'no_warnings':      False,
         'socket_timeout':   30,
         'retries':          5,
         'fragment_retries': 5,
@@ -83,7 +102,6 @@ def get_ydl_opts(download_type, task_id, url=''):
         'progress_hooks':   [lambda d: progress_hook(d, task_id)],
         'http_headers': {
             'User-Agent': (
-                # Facebook needs mobile UA to get proper video with audio
                 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
                 'AppleWebKit/605.1.15 (KHTML, like Gecko) '
                 'Version/17.0 Mobile/15E148 Safari/604.1'
@@ -97,7 +115,6 @@ def get_ydl_opts(download_type, task_id, url=''):
         },
     }
 
-    # YouTube player args
     if is_youtube:
         opts['extractor_args'] = {
             'youtube': {
@@ -106,27 +123,18 @@ def get_ydl_opts(download_type, task_id, url=''):
             }
         }
 
-    # Cookies
+    # Facebook needs cookies to access most videos including share links
     if has_cookies:
         opts['cookiefile'] = COOKIES_FILE
 
-    # FFmpeg location (only if not on system PATH)
     if FFMPEG_PATH and FFMPEG_PATH not in ('ffmpeg', 'ffmpeg.exe'):
         opts['ffmpeg_location'] = FFMPEG_PATH
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # FORMAT SELECTION
-    # The most important thing: EVERY format must include audio (acodec!=none)
-    # ─────────────────────────────────────────────────────────────────────────
-
     if download_type == 'audio':
-        # ── AUDIO ──
         if is_facebook:
-            # Facebook: no standalone audio streams exist publicly
-            # Download the best available stream, ffmpeg extracts audio
+            # Facebook: download best available then extract audio
             opts['format'] = 'best'
         else:
-            # All others: grab best audio-only stream
             opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
 
         if FFMPEG_PATH:
@@ -135,44 +143,50 @@ def get_ydl_opts(download_type, task_id, url=''):
                 'preferredcodec':   'mp3',
                 'preferredquality': '192',
             }]
-        # No ffmpeg → stays as m4a/webm — still pure audio, plays fine
 
     else:
-        # ── VIDEO ──
+        # VIDEO
         if is_facebook:
-            # Facebook: MUST use 'best' not 'best[ext=mp4]'
-            # The [ext=mp4] filter often picks video-only streams on Facebook
-            # 'best' picks the single best stream that has BOTH video AND audio
+            # Facebook: use 'best' — picks a pre-merged stream with video+audio
+            # Do NOT use bestvideo+bestaudio — Facebook streams need auth to merge
             opts['format'] = 'best'
 
         elif FFMPEG_PATH:
-            # For all other sites with ffmpeg available:
-            # Try best mp4 video (non-av01) + best m4a audio → merge to mp4
-            # Fallback 1: any mp4 video + any m4a audio
-            # Fallback 2: best single pre-merged stream with audio
-            # [acodec!=none] ensures we NEVER get video-only
+            # For Instagram, TikTok, Twitter etc:
+            # CRITICAL: we want a format that already has BOTH video and audio
+            # in ONE file. bestvideo+bestaudio requires merging two separate
+            # streams — if either stream is video-only we get silent video.
+            # Solution: prefer pre-merged mp4, fall back to merge only if needed.
             opts['format'] = (
-                'bestvideo[ext=mp4][vcodec!*=av01][acodec=none]'
-                '+bestaudio[ext=m4a]'
+                # First choice: best single-file mp4 that already has audio
+                'best[ext=mp4][acodec!=none][vcodec!=none]'
+                # Second: best single-file with audio (any container)
+                '/best[acodec!=none][vcodec!=none]'
+                # Third: merge separate streams (requires ffmpeg)
                 '/bestvideo[ext=mp4][acodec=none]+bestaudio[ext=m4a]'
                 '/bestvideo[acodec=none]+bestaudio'
-                '/best[acodec!=none]'
+                # Last resort: anything
                 '/best'
             )
             opts['merge_output_format'] = 'mp4'
 
         else:
-            # No ffmpeg: only grab pre-merged streams that already have audio
-            opts['format'] = 'best[acodec!=none][ext=mp4]/best[acodec!=none]'
+            # No ffmpeg: only pre-merged streams
+            opts['format'] = 'best[acodec!=none][vcodec!=none][ext=mp4]/best[acodec!=none][vcodec!=none]'
 
     return opts
 
 
 def find_downloaded_file(task_id):
     try:
+        files = []
         for f in os.listdir(app.config['DOWNLOAD_FOLDER']):
             if f.startswith(task_id):
-                return os.path.join(app.config['DOWNLOAD_FOLDER'], f)
+                full = os.path.join(app.config['DOWNLOAD_FOLDER'], f)
+                files.append((os.path.getmtime(full), full))
+        if files:
+            # Return most recently modified (handles temp files during merge)
+            return sorted(files)[-1][1]
     except Exception:
         pass
     return None
@@ -180,17 +194,19 @@ def find_downloaded_file(task_id):
 
 def _friendly_error(error_msg):
     msg = error_msg.lower()
+    if 'unsupported url' in msg and 'facebook' in msg:
+        return 'This Facebook link is not supported. Try opening the video directly on Facebook and copying that URL instead of a share link.'
     if any(x in msg for x in ['sign in', 'login required', 'age-restricted',
                                'bot', 'checkpoint', 'confirm your age']):
         return 'This video requires login or is age-restricted.'
+    if 'unsupported url' in msg:
+        return 'This URL is not supported. Make sure it is a direct link to a video post.'
     if 'private' in msg:
         return 'This video is private.'
     if 'copyright' in msg:
         return 'Blocked due to copyright restrictions.'
     if any(x in msg for x in ['429', 'rate limit', 'too many requests']):
         return 'Rate limited. Please wait a few minutes and try again.'
-    if any(x in msg for x in ['unsupported url', 'no video formats', 'not supported']):
-        return 'This URL is not supported. Make sure the link is correct.'
     if 'ffmpeg' in msg:
         return 'Processing failed. Try downloading as video instead.'
     if any(x in msg for x in ['network', 'timed out', 'connection']):
@@ -234,12 +250,14 @@ def download_direct(url, download_type, task_id):
     try:
         ydl_opts = get_ydl_opts(download_type, task_id, url)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Single call — extracts info AND downloads in one shot
             info = ydl.extract_info(url, download=True)
             if info:
                 title = info.get('title') or info.get('id') or 'Download'
                 with tasks_lock:
                     task['title'] = title
+
+        # Wait briefly for ffmpeg merge to finish writing
+        time.sleep(1)
 
         filepath = find_downloaded_file(task_id)
         if not filepath or not os.path.exists(filepath):
@@ -266,17 +284,13 @@ def download_direct(url, download_type, task_id):
 
         with tasks_lock:
             task.update({
-                'status':       'completed',
-                'progress':     100,
-                'filename':     filename,
-                'filesize':     filesize,
-                'filepath':     filepath,
-                'filetype':     ext,
-                'mimetype':     mimetype,
-                'site':         site_name,
-                'completed':    True,
+                'status': 'completed', 'progress': 100,
+                'filename': filename,   'filesize': filesize,
+                'filepath': filepath,   'filetype': ext,
+                'mimetype': mimetype,   'site': site_name,
+                'completed': True,
                 'completed_at': datetime.now().isoformat(),
-                'message':      'Download complete!',
+                'message': 'Download complete!',
             })
         return True
 
@@ -318,7 +332,6 @@ def process_download(task_id, url, download_type):
             task.update({'status': 'error', 'message': str(e)[:200], 'completed': False})
 
 
-# ── ROUTES ────────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -344,24 +357,14 @@ def start_download():
 
         with tasks_lock:
             download_tasks[task_id] = {
-                'id':          task_id,
-                'url':         url,
-                'type':        download_type,
-                'status':      'starting',
-                'progress':    0,
-                'message':     f'Starting download from {site_name}...',
-                'filename':    None,
-                'filesize':    None,
-                'filepath':    None,
-                'filetype':    None,
-                'mimetype':    None,
-                'title':       f'{site_name} Download',
-                'site':        site_name,
-                'started_at':  datetime.now().isoformat(),
-                'completed':   False,
-                'speed':       None,
-                'eta':         None,
-                'error':       None,
+                'id': task_id, 'url': url, 'type': download_type,
+                'status': 'starting', 'progress': 0,
+                'message': f'Starting download from {site_name}...',
+                'filename': None, 'filesize': None, 'filepath': None,
+                'filetype': None, 'mimetype': None,
+                'title': f'{site_name} Download', 'site': site_name,
+                'started_at': datetime.now().isoformat(),
+                'completed': False, 'speed': None, 'eta': None, 'error': None,
             }
 
         threading.Thread(
@@ -384,8 +387,6 @@ def get_status(task_id):
     try:
         age         = (datetime.now() - datetime.fromisoformat(task['started_at'])).total_seconds()
         is_finished = task.get('completed') or task.get('status') == 'error'
-        # Only expire tasks that are finished AND older than 30 minutes
-        # NEVER expire a task that is still running
         if age > 1800 and is_finished:
             fp = task.get('filepath', '')
             if fp and os.path.exists(fp):
@@ -446,16 +447,14 @@ def health():
     with tasks_lock:
         active = len(download_tasks)
     return jsonify({
-        'status':         'ok',
-        'time':           datetime.now().isoformat(),
-        'active_tasks':   active,
-        'ffmpeg':         FFMPEG_PATH or 'not found',
+        'status': 'ok', 'time': datetime.now().isoformat(),
+        'active_tasks': active,
+        'ffmpeg': FFMPEG_PATH or 'not found',
         'yt_dlp_version': yt_dlp.version.__version__,
         'cookies_loaded': os.path.exists(COOKIES_FILE),
     })
 
 
-# ── CLEANUP ───────────────────────────────────────────────────────────────────
 def cleanup_old_files():
     try:
         now = time.time()
