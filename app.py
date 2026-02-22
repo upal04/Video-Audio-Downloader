@@ -60,33 +60,30 @@ def get_ydl_opts(download_type, task_id, url=''):
     output_template = os.path.join(app.config['DOWNLOAD_FOLDER'], f'{task_id}.%(ext)s')
     has_cookies = os.path.exists(COOKIES_FILE)
 
-    netloc = ''
     try:
         netloc = urlparse(url).netloc.lower()
-    except:
-        pass
+    except Exception:
+        netloc = ''
 
-    is_facebook  = any(x in netloc for x in ['facebook.com', 'fb.watch', 'fb.com'])
-    is_youtube   = any(x in netloc for x in ['youtube.com', 'youtu.be'])
+    is_facebook = any(x in netloc for x in ['facebook.com', 'fb.watch', 'fb.com'])
+    is_youtube  = any(x in netloc for x in ['youtube.com', 'youtu.be'])
     is_instagram = 'instagram.com' in netloc
-    is_tiktok    = 'tiktok.com' in netloc
+    is_tiktok   = 'tiktok.com' in netloc
 
     opts = {
-        'outtmpl': output_template,
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 60,
-        'retries': 10,
-        'fragment_retries': 10,
-        'concurrent_fragment_downloads': 8,
-        'buffersize': 1024 * 1024,
-        'http_chunk_size': 1048576,
-        'continuedl': True,
-        'noplaylist': True,
-        'ignoreerrors': False,
-        'progress_hooks': [lambda d: progress_hook(d, task_id)],
+        'outtmpl':          output_template,
+        'quiet':            True,
+        'no_warnings':      True,
+        'socket_timeout':   30,
+        'retries':          5,
+        'fragment_retries': 5,
+        'ignoreerrors':     False,
+        'no_check_certificate': True,
+        'concurrent_fragment_downloads': 4,
+        'progress_hooks':   [lambda d: progress_hook(d, task_id)],
         'http_headers': {
             'User-Agent': (
+                # Facebook needs mobile UA to get proper video with audio
                 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
                 'AppleWebKit/605.1.15 (KHTML, like Gecko) '
                 'Version/17.0 Mobile/15E148 Safari/604.1'
@@ -94,51 +91,82 @@ def get_ydl_opts(download_type, task_id, url=''):
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                 'AppleWebKit/537.36 (KHTML, like Gecko) '
                 'Chrome/122.0.0.0 Safari/537.36'
-            )
-        }
+            ),
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': '*/*',
+        },
     }
 
+    # YouTube player args
+    if is_youtube:
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['mweb', 'tv_embedded', 'ios', 'android'],
+                'player_skip':   ['webpage', 'configs'],
+            }
+        }
+
+    # Cookies
     if has_cookies:
         opts['cookiefile'] = COOKIES_FILE
 
-    if FFMPEG_PATH:
+    # FFmpeg location (only if not on system PATH)
+    if FFMPEG_PATH and FFMPEG_PATH not in ('ffmpeg', 'ffmpeg.exe'):
         opts['ffmpeg_location'] = FFMPEG_PATH
 
-    # 🚫 BLOCK YOUTUBE COMPLETELY
-    if is_youtube:
-        raise yt_dlp.utils.DownloadError("YouTube is not supported.")
+    # ─────────────────────────────────────────────────────────────────────────
+    # FORMAT SELECTION
+    # The most important thing: EVERY format must include audio (acodec!=none)
+    # ─────────────────────────────────────────────────────────────────────────
 
-    # ===============================
-    # AUDIO
-    # ===============================
     if download_type == 'audio':
-        opts['format'] = 'bestaudio/best'
+        # ── AUDIO ──
+        if is_facebook:
+            # Facebook: no standalone audio streams exist publicly
+            # Download the best available stream, ffmpeg extracts audio
+            opts['format'] = 'best'
+        else:
+            # All others: grab best audio-only stream
+            opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
 
         if FFMPEG_PATH:
             opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
+                'key':              'FFmpegExtractAudio',
+                'preferredcodec':   'mp3',
                 'preferredquality': '192',
             }]
+        # No ffmpeg → stays as m4a/webm — still pure audio, plays fine
 
-    # ===============================
-    # VIDEO (ALWAYS WITH AUDIO)
-    # ===============================
     else:
+        # ── VIDEO ──
+        if is_facebook:
+            # Facebook: MUST use 'best' not 'best[ext=mp4]'
+            # The [ext=mp4] filter often picks video-only streams on Facebook
+            # 'best' picks the single best stream that has BOTH video AND audio
+            opts['format'] = 'best'
 
-        if FFMPEG_PATH:
-            # Guaranteed merge
+        elif FFMPEG_PATH:
+            # For all other sites with ffmpeg available:
+            # Try best mp4 video (non-av01) + best m4a audio → merge to mp4
+            # Fallback 1: any mp4 video + any m4a audio
+            # Fallback 2: best single pre-merged stream with audio
+            # [acodec!=none] ensures we NEVER get video-only
             opts['format'] = (
-                'bestvideo+bestaudio/'
-                'best[acodec!=none]/'
-                'best'
+                'bestvideo[ext=mp4][vcodec!*=av01][acodec=none]'
+                '+bestaudio[ext=m4a]'
+                '/bestvideo[ext=mp4][acodec=none]+bestaudio[ext=m4a]'
+                '/bestvideo[acodec=none]+bestaudio'
+                '/best[acodec!=none]'
+                '/best'
             )
             opts['merge_output_format'] = 'mp4'
+
         else:
-            # If no ffmpeg, only merged streams
-            opts['format'] = 'best[acodec!=none]/best'
+            # No ffmpeg: only grab pre-merged streams that already have audio
+            opts['format'] = 'best[acodec!=none][ext=mp4]/best[acodec!=none]'
 
     return opts
+
 
 def find_downloaded_file(task_id):
     try:
