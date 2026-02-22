@@ -539,6 +539,7 @@ function startPoll(){
     function doPoll(){
         if(!currentTaskId)return;
         fetch('/api/status/'+currentTaskId).then(r=>{
+            // Ignore 404 in first 10s — backend thread may still be starting
             if(r.status===404&&(Date.now()-pollStart)<10000)return null;
             return r.json();
         }).then(data=>{
@@ -557,6 +558,7 @@ function startPoll(){
             else if(data.status==='error'){clearInterval(progressInterval);showErr(data.message||'Download failed');}
         }).catch(()=>{});
     }
+    // 2s delay before first poll so backend thread has time to register
     setTimeout(()=>{doPoll();progressInterval=setInterval(doPoll,2000);},2000);
 }
 
