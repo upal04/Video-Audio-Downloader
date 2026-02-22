@@ -35,7 +35,7 @@ def setup_cookies():
 setup_cookies()
 
 download_tasks = {}
-tasks_lock    = threading.Lock()
+tasks_lock = threading.Lock()
 
 # ── FFMPEG ────────────────────────────────────────────────────────────────────
 def ensure_ffmpeg():
@@ -67,6 +67,8 @@ def get_ydl_opts(download_type, task_id, url=''):
 
     is_facebook = any(x in netloc for x in ['facebook.com', 'fb.watch', 'fb.com'])
     is_youtube  = any(x in netloc for x in ['youtube.com', 'youtu.be'])
+    is_instagram = 'instagram.com' in netloc
+    is_tiktok   = 'tiktok.com' in netloc
 
     opts = {
         'outtmpl':          output_template,
@@ -81,17 +83,21 @@ def get_ydl_opts(download_type, task_id, url=''):
         'progress_hooks':   [lambda d: progress_hook(d, task_id)],
         'http_headers': {
             'User-Agent': (
+                # Facebook needs mobile UA to get proper video with audio
                 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
-                'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                'AppleWebKit/605.1.15 (KHTML, like Gecko) '
+                'Version/17.0 Mobile/15E148 Safari/604.1'
                 if is_facebook else
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/122.0.0.0 Safari/537.36'
             ),
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': '*/*',
         },
     }
 
+    # YouTube player args
     if is_youtube:
         opts['extractor_args'] = {
             'youtube': {
@@ -100,46 +106,64 @@ def get_ydl_opts(download_type, task_id, url=''):
             }
         }
 
+    # Cookies
     if has_cookies:
         opts['cookiefile'] = COOKIES_FILE
 
+    # FFmpeg location (only if not on system PATH)
     if FFMPEG_PATH and FFMPEG_PATH not in ('ffmpeg', 'ffmpeg.exe'):
         opts['ffmpeg_location'] = FFMPEG_PATH
 
-    # ── AUDIO ──────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # FORMAT SELECTION
+    # The most important thing: EVERY format must include audio (acodec!=none)
+    # ─────────────────────────────────────────────────────────────────────────
+
     if download_type == 'audio':
+        # ── AUDIO ──
         if is_facebook:
-            # Facebook blocks audio-only URLs — download best mp4 then extract audio
-            opts['format'] = 'best[ext=mp4]/best'
+            # Facebook: no standalone audio streams exist publicly
+            # Download the best available stream, ffmpeg extracts audio
+            opts['format'] = 'best'
         else:
-            opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+            # All others: grab best audio-only stream
+            opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
+
         if FFMPEG_PATH:
             opts['postprocessors'] = [{
                 'key':              'FFmpegExtractAudio',
                 'preferredcodec':   'mp3',
                 'preferredquality': '192',
             }]
-        # no ffmpeg → stays as m4a, still pure audio
+        # No ffmpeg → stays as m4a/webm — still pure audio, plays fine
 
-    # ── VIDEO ──────────────────────────────────────────────────────────────────
     else:
+        # ── VIDEO ──
         if is_facebook:
-            # Facebook: grab best pre-merged mp4 — no separate streams needed
-            opts['format'] = 'best[ext=mp4]/best'
+            # Facebook: MUST use 'best' not 'best[ext=mp4]'
+            # The [ext=mp4] filter often picks video-only streams on Facebook
+            # 'best' picks the single best stream that has BOTH video AND audio
+            opts['format'] = 'best'
+
         elif FFMPEG_PATH:
-            # KEY FIX: use bestvideo*+bestaudio* (the * means "any codec")
-            # then fallback to best single-file mp4 that already has audio
-            # this guarantees audio is always included
+            # For all other sites with ffmpeg available:
+            # Try best mp4 video (non-av01) + best m4a audio → merge to mp4
+            # Fallback 1: any mp4 video + any m4a audio
+            # Fallback 2: best single pre-merged stream with audio
+            # [acodec!=none] ensures we NEVER get video-only
             opts['format'] = (
-                'bestvideo[ext=mp4][vcodec!*=av01]+bestaudio[ext=m4a]'
-                '/bestvideo[ext=mp4]+bestaudio[ext=m4a]'
-                '/best[ext=mp4]'
+                'bestvideo[ext=mp4][vcodec!*=av01][acodec=none]'
+                '+bestaudio[ext=m4a]'
+                '/bestvideo[ext=mp4][acodec=none]+bestaudio[ext=m4a]'
+                '/bestvideo[acodec=none]+bestaudio'
+                '/best[acodec!=none]'
                 '/best'
             )
             opts['merge_output_format'] = 'mp4'
+
         else:
-            # No ffmpeg — only grab pre-merged formats that have both video+audio
-            opts['format'] = 'best[ext=mp4][acodec!=none]/best[acodec!=none]'
+            # No ffmpeg: only grab pre-merged streams that already have audio
+            opts['format'] = 'best[acodec!=none][ext=mp4]/best[acodec!=none]'
 
     return opts
 
@@ -210,7 +234,7 @@ def download_direct(url, download_type, task_id):
     try:
         ydl_opts = get_ydl_opts(download_type, task_id, url)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Single call — info + download in one shot (fastest)
+            # Single call — extracts info AND downloads in one shot
             info = ydl.extract_info(url, download=True)
             if info:
                 title = info.get('title') or info.get('id') or 'Download'
@@ -242,13 +266,17 @@ def download_direct(url, download_type, task_id):
 
         with tasks_lock:
             task.update({
-                'status': 'completed', 'progress': 100,
-                'filename': filename,  'filesize': filesize,
-                'filepath': filepath,  'filetype': ext,
-                'mimetype': mimetype,  'site': site_name,
-                'completed': True,
+                'status':       'completed',
+                'progress':     100,
+                'filename':     filename,
+                'filesize':     filesize,
+                'filepath':     filepath,
+                'filetype':     ext,
+                'mimetype':     mimetype,
+                'site':         site_name,
+                'completed':    True,
                 'completed_at': datetime.now().isoformat(),
-                'message': 'Download complete!',
+                'message':      'Download complete!',
             })
         return True
 
@@ -316,14 +344,24 @@ def start_download():
 
         with tasks_lock:
             download_tasks[task_id] = {
-                'id': task_id, 'url': url, 'type': download_type,
-                'status': 'starting', 'progress': 0,
-                'message': f'Starting download from {site_name}...',
-                'filename': None, 'filesize': None, 'filepath': None,
-                'filetype': None, 'mimetype': None,
-                'title': f'{site_name} Download', 'site': site_name,
-                'started_at': datetime.now().isoformat(),
-                'completed': False, 'speed': None, 'eta': None, 'error': None,
+                'id':          task_id,
+                'url':         url,
+                'type':        download_type,
+                'status':      'starting',
+                'progress':    0,
+                'message':     f'Starting download from {site_name}...',
+                'filename':    None,
+                'filesize':    None,
+                'filepath':    None,
+                'filetype':    None,
+                'mimetype':    None,
+                'title':       f'{site_name} Download',
+                'site':        site_name,
+                'started_at':  datetime.now().isoformat(),
+                'completed':   False,
+                'speed':       None,
+                'eta':         None,
+                'error':       None,
             }
 
         threading.Thread(
@@ -346,8 +384,8 @@ def get_status(task_id):
     try:
         age         = (datetime.now() - datetime.fromisoformat(task['started_at'])).total_seconds()
         is_finished = task.get('completed') or task.get('status') == 'error'
-        # Only expire tasks that are finished AND older than 30 min
-        # Never expire still-running tasks
+        # Only expire tasks that are finished AND older than 30 minutes
+        # NEVER expire a task that is still running
         if age > 1800 and is_finished:
             fp = task.get('filepath', '')
             if fp and os.path.exists(fp):
@@ -408,9 +446,10 @@ def health():
     with tasks_lock:
         active = len(download_tasks)
     return jsonify({
-        'status': 'ok', 'time': datetime.now().isoformat(),
-        'active_tasks': active,
-        'ffmpeg': FFMPEG_PATH or 'not found',
+        'status':         'ok',
+        'time':           datetime.now().isoformat(),
+        'active_tasks':   active,
+        'ffmpeg':         FFMPEG_PATH or 'not found',
         'yt_dlp_version': yt_dlp.version.__version__,
         'cookies_loaded': os.path.exists(COOKIES_FILE),
     })
@@ -428,7 +467,8 @@ def cleanup_old_files():
         with tasks_lock:
             to_del = [
                 tid for tid, t in download_tasks.items()
-                if (datetime.now() - datetime.fromisoformat(t['started_at'])).total_seconds() > 3600
+                if (datetime.now() - datetime.fromisoformat(
+                    t['started_at'])).total_seconds() > 3600
             ]
             for tid in to_del:
                 download_tasks.pop(tid, None)
